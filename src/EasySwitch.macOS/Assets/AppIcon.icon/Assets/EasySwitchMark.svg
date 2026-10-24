@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512">
+  <!-- Android ic_launcher_foreground.xml artwork, enlarged for the macOS app icon.
+       The 16-unit outlines keep the original internal gaps readable at small sizes.
+       The opaque purple background and system mask live in icon.json. -->
+  <g transform="translate(256 256) scale(1.16) translate(-270 -256)">
+    <g fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M125 188H169A13 13 0 0 1 182 201V311A13 13 0 0 1 169 324H125A13 13 0 0 1 112 311V201A13 13 0 0 1 125 188Z"/>
+      <path d="M139 311H155"/>
+      <path d="M341 200H417A11 11 0 0 1 428 211V263A11 11 0 0 1 417 274H341A11 11 0 0 1 330 263V211A11 11 0 0 1 341 200Z"/>
+      <path d="M379 274V296M356 299H402"/>
+    </g>
+    <g fill="#FFFFFF">
+      <path d="M219 228H269A7 7 0 0 1 276 235V236A7 7 0 0 1 269 243H219A7 7 0 0 1 212 236V235A7 7 0 0 1 219 228Z"/>
+      <path d="M274 216L300 235.5L274 255Z"/>
+      <path d="M243 270H293A7 7 0 0 1 300 277V278A7 7 0 0 1 293 285H243A7 7 0 0 1 236 278V277A7 7 0 0 1 243 270Z"/>
+      <path d="M238 262L212 281.5L238 301Z"/>
+    </g>
+  </g>
+</svg>

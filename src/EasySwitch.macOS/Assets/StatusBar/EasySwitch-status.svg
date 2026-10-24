@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+<g transform="matrix(0.066265060241 0 0 0.066265060241 -5.891566265060 -4.963855421687)">
+  <path d="M125,188 L169,188 A13,13 0 0 1 182,201 L182,311 A13,13 0 0 1 169,324 L125,324 A13,13 0 0 1 112,311 L112,201 A13,13 0 0 1 125,188 Z" fill="none" stroke="#000000" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M139,311 L155,311" fill="none" stroke="#000000" stroke-width="16" stroke-linecap="round" stroke-linejoin="miter"/>
+  <path d="M341,200 L417,200 A11,11 0 0 1 428,211 L428,263 A11,11 0 0 1 417,274 L341,274 A11,11 0 0 1 330,263 L330,211 A11,11 0 0 1 341,200 Z" fill="none" stroke="#000000" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M379,274 L379,296" fill="none" stroke="#000000" stroke-width="16" stroke-linecap="round" stroke-linejoin="miter"/>
+  <path d="M356,299 L402,299" fill="none" stroke="#000000" stroke-width="16" stroke-linecap="round" stroke-linejoin="miter"/>
+  <path d="M219,228 L269,228 A7,7 0 0 1 276,235 L276,236 A7,7 0 0 1 269,243 L219,243 A7,7 0 0 1 212,236 L212,235 A7,7 0 0 1 219,228 Z" fill="#000000"/>
+  <path d="M274,216 L300,235.5 L274,255 Z" fill="#000000"/>
+  <path d="M243,270 L293,270 A7,7 0 0 1 300,277 L300,278 A7,7 0 0 1 293,285 L243,285 A7,7 0 0 1 236,278 L236,277 A7,7 0 0 1 243,270 Z" fill="#000000"/>
+  <path d="M238,262 L212,281.5 L238,301 Z" fill="#000000"/>
+</g>
+</svg>

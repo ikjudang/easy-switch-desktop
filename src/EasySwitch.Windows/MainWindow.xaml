@@ -1,0 +1,8 @@
+<Window x:Class="EasySwitch.Windows.MainWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="EasySwitch" Width="1140" Height="720" MinWidth="860" MinHeight="580"
+ Background="{StaticResource Bg}" Foreground="{StaticResource Text}" FontFamily="{StaticResource Pretendard}"
+ WindowStartupLocation="CenterScreen" UseLayoutRounding="True">
+ <Grid x:Name="LayoutRoot" Background="{StaticResource Bg}" />
+</Window>
