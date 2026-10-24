@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EasySwitch.Core/EasySwitch.Core.csproj" />
+    <Project Path="src/EasySwitch.Windows/EasySwitch.Windows.csproj" />
+    <Project Path="src/EasySwitch.Hidpp/EasySwitch.Hidpp.csproj" />
+    <Project Path="src/EasySwitch.Probe/EasySwitch.Probe.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EasySwitch.Core.Tests/EasySwitch.Core.Tests.csproj" />
+    <Project Path="tests/EasySwitch.Windows.Tests/EasySwitch.Windows.Tests.csproj" />
+    <Project Path="tests/EasySwitch.Hidpp.Tests/EasySwitch.Hidpp.Tests.csproj" />
+  </Folder>
+</Solution>

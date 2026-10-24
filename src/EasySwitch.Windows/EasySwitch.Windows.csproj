@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <AssemblyName>EasySwitch</AssemblyName>
+    <RootNamespace>EasySwitch.Windows</RootNamespace>
+    <Version>0.2.31</Version>
+    <ApplicationIcon>Assets/EasySwitch.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- WPF owns startup/DPI; WinForms is used only for NotifyIcon. No WinForms Application.Run exists. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
+    <!-- Keep touch support on the WM_POINTER stack. Legacy WISP tablet enumeration can block
+         capture release/window shutdown, leaving a seemingly closed previous version running. -->
+    <RuntimeHostConfigurationOption Include="Switch.System.Windows.Input.Stylus.EnablePointerSupport" Value="true" />
+    <ProjectReference Include="../EasySwitch.Core/EasySwitch.Core.csproj" />
+    <Compile Include="../EasySwitch.Probe/Win32Hid.cs" Link="Hardware/Win32Hid.cs" />
+    <Resource Include="Assets/Fonts/*" />
+    <Resource Include="Assets/EasySwitch.ico" />
+    <Content Include="Assets/Licenses/*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

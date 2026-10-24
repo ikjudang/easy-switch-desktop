@@ -1,0 +1,51 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "srgb:0.4235294117647059,0.23529411764705882,0.8784313725490196,1.0000000000000000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "srgb:0.4235294117647059,0.23529411764705882,0.8784313725490196,1.0000000000000000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "name": "EasySwitch mark",
+      "layers": [
+        {
+          "image-name": "EasySwitchMark.svg",
+          "name": "Existing white phone, monitor and arrows",
+          "glass": false,
+          "fill-specializations": [
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:1.00000,1.00000,1.00000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "lighting": "individual",
+      "blur-material": 0,
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

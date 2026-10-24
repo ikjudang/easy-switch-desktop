@@ -1,0 +1,178 @@
+{
+  "packageId": "windows-to-macos-2026-10-24-pc0221-4ab2ff6",
+  "synthetic": true,
+  "capturedFromUserDevice": false,
+  "representation": "uppercase hex; report ID included; targets zero based",
+  "validation": "against baseline C# library, see verification.json",
+  "cases": [
+    {
+      "id": "build-short-default-test-id",
+      "kind": "build",
+      "feature": 5,
+      "function": 1,
+      "device": 255,
+      "software": 10,
+      "parameters": [
+        2
+      ],
+      "report": "short",
+      "expected": "10 FF 05 1A 02 00 00"
+    },
+    {
+      "id": "build-short-runtime-id",
+      "kind": "build",
+      "feature": 9,
+      "function": 1,
+      "device": 2,
+      "software": 9,
+      "parameters": [
+        1
+      ],
+      "report": "short",
+      "expected": "10 02 09 19 01 00 00"
+    },
+    {
+      "id": "build-root-long",
+      "kind": "build",
+      "feature": 0,
+      "function": 0,
+      "device": 255,
+      "software": 9,
+      "parameters": [
+        24,
+        20
+      ],
+      "report": "long",
+      "expected": "11 FF 00 09 18 14 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "id": "event-source-zero",
+      "kind": "event",
+      "frame": "10 FF 09 00 00 01 00",
+      "feature": 9,
+      "expected": 1
+    },
+    {
+      "id": "event-source-nonzero",
+      "kind": "event",
+      "frame": "10 FF 09 00 02 00 00",
+      "feature": 9,
+      "expected": 0
+    },
+    {
+      "id": "event-slot-not-channel",
+      "kind": "event",
+      "frame": "10 05 09 00 01 02 00",
+      "feature": 9,
+      "expected": 2
+    },
+    {
+      "id": "reject-noise-target",
+      "kind": "event",
+      "frame": "10 FF 09 00 4B 08 00",
+      "feature": 9,
+      "expected": null
+    },
+    {
+      "id": "reject-query-response-as-event",
+      "kind": "event",
+      "frame": "10 FF 09 09 03 01 00",
+      "feature": 9,
+      "expected": null
+    },
+    {
+      "id": "reject-other-feature-event",
+      "kind": "event",
+      "frame": "10 FF 08 00 00 01 00",
+      "feature": 9,
+      "expected": null
+    },
+    {
+      "id": "reject-short-truncated",
+      "kind": "parse",
+      "frame": "10 FF 09 00 00 01",
+      "expected": false
+    },
+    {
+      "id": "host-three-current-two",
+      "kind": "host",
+      "frame": "10 FF 09 09 03 02 00",
+      "expected": {
+        "count": 3,
+        "current": 2
+      }
+    },
+    {
+      "id": "host-zero-is-invalid",
+      "kind": "host",
+      "frame": "10 FF 09 09 00 00 00",
+      "expectedError": true
+    },
+    {
+      "id": "host-current-outside-count",
+      "kind": "host",
+      "frame": "10 FF 09 09 02 02 00",
+      "expectedError": true
+    },
+    {
+      "id": "match-long-response",
+      "kind": "match",
+      "request": "10 02 00 09 18 14 00",
+      "frame": "11 02 00 09 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "expected": "Response"
+    },
+    {
+      "id": "reject-other-slot-response",
+      "kind": "match",
+      "request": "10 02 00 09 18 14 00",
+      "frame": "10 03 00 09 09 00 00",
+      "expected": null
+    },
+    {
+      "id": "reject-other-software-response",
+      "kind": "match",
+      "request": "10 02 00 09 18 14 00",
+      "frame": "10 02 00 0A 09 00 00",
+      "expected": null
+    },
+    {
+      "id": "reject-event-as-response",
+      "kind": "match",
+      "request": "10 02 00 09 18 14 00",
+      "frame": "10 02 00 00 09 00 00",
+      "expected": null
+    },
+    {
+      "id": "error-canonical-2",
+      "kind": "match",
+      "request": "10 02 7F 09 00 00 00",
+      "frame": "10 02 FF 7F 09 06 00",
+      "expected": "ErrorSolaarLayout"
+    },
+    {
+      "id": "error-swapped-compatibility",
+      "kind": "match",
+      "request": "10 02 7F 09 00 00 00",
+      "frame": "10 02 FF 09 7F 06 00",
+      "expected": "ErrorSwappedLayout"
+    },
+    {
+      "id": "error-canonical-1",
+      "kind": "match",
+      "request": "10 02 7F 09 00 00 00",
+      "frame": "10 02 8F 7F 09 08 00",
+      "expected": "ErrorSolaarLayout"
+    },
+    {
+      "id": "parse-canonical-error",
+      "kind": "error",
+      "frame": "10 03 8F 00 09 09 00",
+      "expected": {
+        "protocol": 1,
+        "failedFeature": 0,
+        "funcSw": 9,
+        "code": 9
+      }
+    }
+  ]
+}

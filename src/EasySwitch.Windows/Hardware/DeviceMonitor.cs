@@ -1,0 +1,252 @@
+using System.Collections.Concurrent;
+using EasySwitch.Core;
+using EasySwitch.Hidpp;
+using EasySwitch.Probe;
+using EasySwitch.Windows.Infrastructure;
+
+namespace EasySwitch.Windows.Hardware;
+
+internal sealed class DeviceMonitor(AppLog log) : IAsyncDisposable
+{
+    private readonly ConcurrentDictionary<string, HidConnection> _connections = new();
+    private readonly ConcurrentDictionary<string, byte> _initialized = new();
+    private readonly ConcurrentDictionary<(string Key, int Index), HostDevice> _devices = new();
+    private readonly ConcurrentDictionary<string, HidInterface> _descriptions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<(string, int), EarlySignalGate<byte[]>> _early = new();
+    private readonly CancellationTokenSource _stop = new();
+    private readonly ConcurrentDictionary<Task, byte> _operations = new();
+    private readonly Dictionary<string, DateTimeOffset> _openRetry = [];
+    private Task? _loop;
+    private int _refreshRequested;
+    private int _recoveryRequested,_suspended;
+    private TaskCompletionSource? _recoveryCompletion;
+    private readonly SemaphoreSlim _wake=new(0,1);
+    public event Action? Changed;
+    public event Action<HostDevice, int>? HostChanged;
+    public event Action<HostDevice>? Arrived;
+    public event Action<HostDevice>? PairingInvalidated;
+    public IReadOnlyList<DeviceInfo> Snapshot() => _devices.Values.Select(d => d.Info).Where(d => d.HostCount > 0).OrderBy(d => d.Name).ToArray();
+    public HostDevice? Find(string? id) => id is null ? null : _devices.Values.FirstOrDefault(d => d.Id == id);
+    public void Start() => _loop = Task.Run(RunAsync);
+    private void Wake(){try{_wake.Release();}catch(SemaphoreFullException){}}
+    public void Refresh(){Interlocked.Exchange(ref _refreshRequested,1);Wake();}
+    internal bool Started=>_loop is not null;
+    public void Suspend(){Volatile.Write(ref _suspended,1);Interlocked.Exchange(ref _recoveryRequested,1);Wake();}
+    public void Recover(){Interlocked.Exchange(ref _recoveryRequested,1);Volatile.Write(ref _suspended,0);Wake();}
+    public async Task SuspendAndWaitAsync()
+    {
+        if(_loop is null){Suspend();return;}
+        var completion=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Interlocked.Exchange(ref _recoveryCompletion,completion)?.TrySetCanceled();Suspend();
+        await completion.Task.WaitAsync(TimeSpan.FromSeconds(8));
+    }
+
+    private void Track(Task task)
+    {
+        _operations.TryAdd(task, 0);
+        _ = task.ContinueWith(t =>
+        {
+            _operations.TryRemove(t, out _);
+            if (t.IsFaulted) log.Write($"기기 작업 실패. 감시 루프는 계속함: {t.Exception!.GetBaseException()}");
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private async Task RunAsync()
+    {
+        try
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                try
+                {
+                    if(Interlocked.Exchange(ref _recoveryRequested,0)!=0)await ResetConnectionsAsync().ConfigureAwait(false);
+                    if(Volatile.Read(ref _suspended)!=0){await _wake.WaitAsync(250,_stop.Token).ConfigureAwait(false);continue;}
+                    await ScanAsync().ConfigureAwait(false);
+                    var force=Interlocked.Exchange(ref _refreshRequested,0)==1;
+                    foreach (var device in _devices.Values.Where(d => d.TransportAvailable && !d.SwitchGraceActive && _initialized.ContainsKey(d.ConnectionKey)))
+                    {
+                        Track(device.RefreshAsync(_stop.Token,force));
+                    }
+                }
+                catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }
+                catch (Exception error)
+                {
+                    log.Write($"기기 검색 실패: {error.GetType().Name} {error.Message}");
+                }
+                await _wake.WaitAsync(100,_stop.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+    }
+
+    private async Task ResetConnectionsAsync()
+    {
+        var completion=Interlocked.Exchange(ref _recoveryCompletion,null);
+        try
+        {
+            var old=_connections.ToArray();
+            foreach(var pair in old)_connections.TryRemove(pair.Key,out _);
+            foreach(var device in _devices.Values)device.MarkLinkClosed();
+            _devices.Clear();_initialized.Clear();_early.Clear();_descriptions.Clear();_openRetry.Clear();
+            foreach(var pair in old)await pair.Value.DisposeAsync().ConfigureAwait(false);
+            log.Write("전원 상태 변경: 이전 HID 통로와 보관 신호를 정리하고 기기를 다시 검색함");
+            Changed?.Invoke();
+            completion?.TrySetResult();
+        }
+        catch(Exception error){completion?.TrySetException(error);throw;}
+    }
+
+    private async Task ScanAsync()
+    {
+        var paths = HidInventory.Read();
+        foreach (var pair in _connections.ToArray())
+        {
+            if (pair.Value.IsOpen && pair.Value.Paths.All(paths.Contains)) continue;
+            if (!_connections.TryRemove(pair.Key, out var connection)) continue;
+            _initialized.TryRemove(pair.Key, out _);
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+        foreach (var path in _descriptions.Keys.Where(p => !paths.Contains(p))) _descriptions.TryRemove(path, out _);
+        foreach (var path in paths.Where(p => !_descriptions.ContainsKey(p)))
+        {
+            var info = Win32Hid.Describe(path);
+            if (info is not null) _descriptions[path] = info;
+        }
+        var groups = _descriptions.Values.Where(i => (i.IsBleHidpp || i.IsReceiverHidpp) && i.InputLength >= 7 && i.OutputLength >= 7)
+            .GroupBy(HidConnection.GroupKey);
+        foreach (var group in groups)
+        {
+            if (_connections.ContainsKey(group.Key)) continue;
+            if (_openRetry.TryGetValue(group.Key, out var retryAt) && DateTimeOffset.UtcNow < retryAt) continue;
+            _openRetry[group.Key] = DateTimeOffset.UtcNow.AddSeconds(5);
+            var channels = new List<(HidInterface, FileStream)>();
+            foreach (var info in group)
+            {
+                var opened = Win32Hid.OpenReadWrite(info.Path);
+                if (opened.Stream is null)
+                {
+                    log.Write($"[{info.Label}] HID 통로 열기 실패: Windows 오류 {opened.Error}");
+                    continue;
+                }
+                channels.Add((info, opened.Stream));
+            }
+            if (channels.Count == 0) continue;
+            var connection = new HidConnection(group.Key, channels, log);
+            _connections[group.Key] = connection;
+            connection.Received += OnReceived;
+            connection.Closed += OnClosed;
+            var indices = connection.IsReceiver ? Enumerable.Range(1, 6) : [HidppConstants.DeviceIndexDirect];
+            foreach (var index in indices)
+            {
+                _devices.TryGetValue((connection.Key, index), out var previousDevice);
+                var device = new HostDevice(connection, index, log, previousDevice?.Info);
+                device.Changed += OnDeviceChanged;
+                device.FeatureReady += ReplayEarlyEvents;
+                device.LinkArrived += arrived => Arrived?.Invoke(arrived);
+                device.PairingInvalidated += invalidated => PairingInvalidated?.Invoke(invalidated);
+                _devices[(connection.Key, index)] = device;
+            }
+            connection.Start();
+            log.Write($"[{connection.Name}] 공유 모드로 HID 통로 {channels.Count}개 열림");
+            Track(InitializeConnectionAsync(connection));
+        }
+    }
+
+    private async Task InitializeConnectionAsync(HidConnection connection)
+    {
+        await connection.ConfigureReceiverNotificationsAsync(_stop.Token).ConfigureAwait(false);
+        if (!connection.IsOpen || !_connections.TryGetValue(connection.Key, out var current) || !ReferenceEquals(current, connection)) return;
+        _initialized[connection.Key] = 1;
+        await Task.WhenAll(_devices.Where(p => p.Key.Key == connection.Key).Select(p => p.Value.RefreshAsync(_stop.Token,true))).ConfigureAwait(false);
+    }
+
+    private void OnClosed(HidConnection connection)
+    {
+        foreach (var key in _early.Keys.Where(k => k.Item1 == connection.Key).ToArray())
+        {
+            if (_early.TryRemove(key, out var queue) && !queue.IsEmpty)
+                log.Write($"[{connection.Name}] 보관 이벤트 폐기: feature 조회 전에 통로가 닫혀 새 연결에서 재생하지 않음");
+        }
+        foreach (var device in _devices.Where(p => p.Key.Key == connection.Key).Select(p => p.Value)) device.MarkLinkClosed();
+    }
+
+    private void OnDeviceChanged(HostDevice device)
+    {
+        if (!_devices.TryGetValue((device.ConnectionKey, device.Index), out var current) || !ReferenceEquals(device, current)) return;
+        Changed?.Invoke();
+    }
+
+    private void OnReceived(HidConnection connection, byte[] raw)
+    {
+        if(Volatile.Read(ref _suspended)!=0 || Volatile.Read(ref _recoveryRequested)!=0)return;
+        if (!_connections.TryGetValue(connection.Key, out var active) || !ReferenceEquals(active, connection)) return;
+        if (raw.Length < 7) return;
+        if (connection.IsReceiver && ReceiverMessages.ParseDeviceConnection(raw) is { } notice)
+        {
+            if (_devices.TryGetValue((connection.Key, notice.DeviceIndex), out var noticed))
+            {
+                log.Write($"[{noticed.Name}] 0x41 연결 알림: {Hex.Format(raw)}. 링크 {(notice.LinkEstablishedAssumed ? "도착" : "이탈")}, 현재 채널은 실제 응답으로 확인함");
+                noticed.ApplyConnectionNotice(notice);
+                if (notice.LinkEstablishedAssumed) Track(noticed.RefreshAsync(_stop.Token,true));
+            }
+            return;
+        }
+        if (connection.IsReceiver && raw[2] == HidppConstants.Hidpp10DeviceDisconnection)
+        {
+            if (_devices.TryGetValue((connection.Key, (int)raw[1]), out var unpaired)) unpaired.InvalidatePairing();
+            if (_early.TryRemove((connection.Key, raw[1]), out var removed) && !removed.IsEmpty)
+                log.Write("등록 해제로 보관 중인 이전 기기의 이벤트를 폐기함");
+            return;
+        }
+        if (raw[3] != 0 || HidppFrameParser.IsError(raw)) return;
+        if (!_devices.TryGetValue((connection.Key, (int)raw[1]), out var device)) return;
+        if (device.Info.FeatureIndex == 0 || device.CurrentHost is null)
+        {
+            var queue = _early.GetOrAdd((connection.Key, raw[1]), _ => new());
+            if (queue.Hold(raw, device.ConnectionGeneration))
+                log.Write($"[{device.Name}] 초기 이벤트 보관 한도로 가장 오래된 프레임을 폐기함");
+            log.Write($"[{device.Name}] feature 조회 중 기기 이벤트 보관");
+            return;
+        }
+        DecodeEvent(device, raw);
+    }
+
+    private void ReplayEarlyEvents(HostDevice device)
+    {
+        if (device.Info.FeatureIndex == 0 || device.CurrentHost is null) return;
+        foreach (var key in _early.Keys.Where(k => k.Item2 == device.Index).ToArray())
+        {
+            if (!_devices.TryGetValue(key, out var owner) || !ReferenceEquals(owner, device)) continue;
+            if (!_early.TryRemove(key, out var queue)) continue;
+            var held = queue.Open(device.ConnectionGeneration);
+            if (held.Discarded > 0) log.Write($"[{device.Name}] 이전 연결 또는 5초 경과 보관 이벤트 {held.Discarded}개 폐기");
+            foreach (var frame in held.Frames) DecodeEvent(device, frame);
+        }
+    }
+
+    private void DecodeEvent(HostDevice device, byte[] raw)
+    {
+        if (HidppFrameParser.Parse(raw) is { } frame && ChangeHostFeature.ParseHostChangeEvent(frame, device.Info.FeatureIndex) is { } target)
+        {
+            if (target == device.CurrentHost)
+            {
+                log.Write($"[{device.Name}] 도착 채널 {target + 1} 알림: 출발로 처리하지 않음");
+                return;
+            }
+            device.NoteDepartureSignal();
+            log.Write($"[{device.Name}] 전환 신호: 채널 {target + 1}, params[0]=0x{raw[4]:X2}");
+            HostChanged?.Invoke(device, target);
+            device.MarkOffline();
+        }
+        else log.Write($"[{device.Name}] 전환 명령 생략: 채널 전환 이벤트에 해당하지 않음");
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _stop.CancelAsync().ConfigureAwait(false);
+        if (_loop is not null) await _loop.ConfigureAwait(false);
+        foreach (var connection in _connections.Values) await connection.DisposeAsync().ConfigureAwait(false);
+        try { await Task.WhenAll(_operations.Keys).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+    }
+}
