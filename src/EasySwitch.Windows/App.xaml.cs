@@ -173,9 +173,13 @@ public partial class App : Application
         using var stream = GetResourceStream(new Uri("pack://application:,,,/Assets/EasySwitch.ico")).Stream;
         _icon = new System.Drawing.Icon(stream);
         _tray = new Forms.NotifyIcon { Icon = _icon, Text = "Easy Switch", Visible = true };
-        _tray.MouseDoubleClick += (_, args) => { if (args.Button == Forms.MouseButtons.Left) Dispatcher.Invoke(() => _window!.ShowFromTray()); };
         _tray.MouseUp += (_, args) =>
         {
+            if (args.Button == Forms.MouseButtons.Left)
+            {
+                Dispatcher.Invoke(() => { if (_viewModel is not null) _viewModel.FloatingEnabled = true; });
+                return;
+            }
             if (args.Button != Forms.MouseButtons.Right) return;
             Dispatcher.Invoke(OpenTrayMenu);
         };

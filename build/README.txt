@@ -1,6 +1,6 @@
-EasySwitch Windows 0.2.33
+EasySwitch Windows 0.2.34
 
-이 폴더의 EasySwitch-0.2.33-win-x64.exe 파일을 실행한다. 별도의 런타임 설치는 필요 없다.
+이 폴더의 EasySwitch-0.2.34-win-x64.exe 파일을 실행한다. 별도의 런타임 설치는 필요 없다.
 업데이트와 다른 배포 파일: https://github.com/ikjudang/easy-switch-desktop/releases
 
 빠른 실행 패키지는 압축을 푼 뒤 EasySwitch.exe를 실행한다.
@@ -14,6 +14,7 @@ EasySwitch Windows 0.2.33
 
 설정의 플로팅 버튼 행은 하위 설정을 펼치거나 접고, 오른쪽 토글은 사용을 켜거나 끈다.
 X 구역에 놓아 끈 플로팅 버튼은 설정이나 트레이에서 다시 켠다.
+앱은 사용자가 트레이 아이콘을 좌클릭하면 플로팅 버튼을 켜고, 우클릭하면 메뉴를 연다. 이미 켜진 플로팅 버튼은 켜진 상태를 유지한다.
 
 Windows 서비스 설치 요청이 나타나면 사용자가 관리자 승인 창에서 설치를 허용한다.
 설치 후에는 백그라운드 서비스와 트레이 앱이 자동으로 실행된다.
