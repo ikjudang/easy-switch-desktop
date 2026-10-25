@@ -6,7 +6,7 @@ Windows와 macOS 앱을 제공한다. 아래 사용 안내는 Windows 앱을 기
 
 ## 다운로드
 
-- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.33/EasySwitch-0.2.33-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.33/EasySwitch-0.2.33-fast-win-x64.zip)
+- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.34/EasySwitch-0.2.34-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.34/EasySwitch-0.2.34-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.7/EasySwitch-0.1.7-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -41,7 +41,7 @@ Windows와 macOS 앱을 제공한다. 아래 사용 안내는 Windows 앱을 기
 
 ## 트레이와 백그라운드 실행
 
-창의 닫기·최소화는 앱을 트레이로 보낸다. 트레이 메뉴에서 창을 다시 열거나, 채널을 전환하거나, 연결 로그를 확인할 수 있다.
+창의 닫기·최소화는 앱을 트레이로 보낸다. 사용자가 트레이 아이콘을 좌클릭하면 앱이 플로팅 버튼을 켜고, 우클릭하면 메뉴를 연다. 플로팅 버튼이 이미 켜져 있으면 켜진 상태를 유지한다. 메뉴의 **EasySwitch 열기**로 메인 창을 열고, 채널을 전환하거나 연결 로그를 확인할 수 있다.
 
 첫 실행에서 앱이 Windows 서비스 설치를 요청하면 사용자가 관리자 승인 창에서 설치를 허용한다. 서비스 설치 후에는 Windows 시작과 로그인에 맞춰 백그라운드 서비스와 트레이 앱이 자동으로 실행된다. 설치를 다시 시도하려면 트레이의 **로그인 전 실행 설치·업데이트**를 선택한다.
 
