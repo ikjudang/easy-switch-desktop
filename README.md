@@ -6,7 +6,7 @@ Windows와 macOS 앱을 제공한다. 아래 사용 안내는 Windows 앱을 기
 
 ## 다운로드
 
-- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.32/EasySwitch-0.2.32-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.32/EasySwitch-0.2.32-fast-win-x64.zip)
+- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.33/EasySwitch-0.2.33-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.33/EasySwitch-0.2.33-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.7/EasySwitch-0.1.7-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -47,7 +47,7 @@ Windows와 macOS 앱을 제공한다. 아래 사용 안내는 Windows 앱을 기
 
 설치된 서비스는 로그인 전이나 로그아웃 상태에도 기기 감시를 유지한다. PC가 절전 중일 때는 전환을 처리하지 않으며, 절전에서 복귀하면 감시를 다시 시작한다.
 
-트레이의 **앱 종료**는 화면 앱을 종료한다. 설치된 서비스의 따라가기 기능을 중지하려면 **키보드 따라 마우스 전환**을 끈다.
+트레이의 **EasySwitch 종료**는 화면 앱을 종료한다. 설치된 서비스의 따라가기 기능을 중지하려면 **키보드 따라 마우스 전환**을 끈다.
 
 새 버전 파일을 실행하면 앱이 실행 중인 이전 버전을 교체한다. 같은 버전은 기존 창을 열고, 더 오래된 파일을 실행한 경우에는 이미 실행 중인 최신 버전을 유지한다.
 
