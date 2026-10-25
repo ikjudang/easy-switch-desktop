@@ -97,16 +97,26 @@ final class NoticePresenter {
             ("toast-command-en", true, false, [NoticeRow(id: "k", name: "MX MCHNCL", kind: "키보드", state: .complete), NoticeRow(id: "m", name: "MX Master 4", kind: "마우스", state: .unconfirmed)]),
             ("toast-connected", false, true, [NoticeRow(id: "m", name: "MX Master 4", kind: "마우스", state: .connected)]),
             ("toast-connected-en", true, true, [NoticeRow(id: "m", name: "MX Master 4", kind: "마우스", state: .connected)]),
-            ("toast-connected-multi", false, true, [NoticeRow(id: "k", name: "MX MCHNCL", kind: "키보드", state: .connected), NoticeRow(id: "m", name: "MX Master 4", kind: "마우스", state: .connected)])
+            ("toast-connected-multi", false, true, [NoticeRow(id: "k", name: "MX MCHNCL", kind: "키보드", state: .connected), NoticeRow(id: "m", name: "MX Master 4", kind: "마우스", state: .connected)]),
+            ("toast-complete-ko", false, false, [NoticeRow(id: "k", name: "MX KEYS S", kind: "키보드", state: .complete), NoticeRow(id: "m", name: "MX Master 3S", kind: "마우스", state: .complete)]),
+            ("toast-complete-en", true, false, [NoticeRow(id: "k", name: "MX KEYS S", kind: "키보드", state: .complete), NoticeRow(id: "m", name: "MX Master 3S", kind: "마우스", state: .complete)]),
+            ("toast-switching-en", true, false, [NoticeRow(id: "k", name: "MX KEYS S", kind: "키보드", state: .complete), NoticeRow(id: "m", name: "MX Master 3S", kind: "마우스", state: .switching)]),
+            ("toast-long-name-ko", false, false, [NoticeRow(id: "k", name: "MX Mechanical Keyboard", kind: "키보드", state: .unconfirmed), NoticeRow(id: "m", name: "MX Anywhere 3S Mouse", kind: "마우스", state: .failed)]),
+            ("toast-long-name-en", true, false, [NoticeRow(id: "k", name: "MX Mechanical Keyboard", kind: "키보드", state: .unconfirmed), NoticeRow(id: "m", name: "MX Anywhere 3S Mouse", kind: "마우스", state: .failed)]),
+            ("toast-general-ko", false, false, []),
+            ("toast-general-en", true, false, [])
         ]
         for (name, english, connection, rows) in cases {
-            let view = NoticeView()
-            let size = view.update(target: 1, rows: rows, connection: connection, english: english,
-                                   reservedNames: rows.map(\.name), maximumWidth: 600, fresh: true)
-            view.frame = .init(origin: .zero, size: size)
-            guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(name + ".png"))
+            for maximumWidth in [CGFloat(600), 300] {
+                let view = NoticeView()
+                let size = view.update(target: 1, rows: rows, connection: connection, english: english,
+                                       reservedNames: rows.map(\.name), maximumWidth: maximumWidth, fresh: true)
+                view.frame = .init(origin: .zero, size: size)
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                let suffix = maximumWidth == 600 ? "" : "-constrained"
+                try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(name + suffix + ".png"))
+            }
         }
         let presenter = NoticePresenter()
         let keyboard = NoticeRow(id: "fixture-k", name: "MX MCHNCL", kind: "키보드", state: .switching)
@@ -170,12 +180,17 @@ private final class NoticeView: NSView {
         self.english = english; self.connection = connection; self.rows = rows
         title = english ? "Switch to channel \(target + 1)" : "채널 \(target + 1) 전환"
         if fresh {
-            let statuses = english ? ["Complete", "Failed", "Switching", "Needs confirmation", "Connected"] : ["완료", "실패", "전환 중", "확인 필요", "연결됨"]
+            let statuses = english ? ["Complete", "Failed", "Switching", "Unconfirmed", "Connected"] : ["완료", "실패", "전환 중", "확인 필요", "연결됨"]
             statusWidth = ceil(statuses.map(width).max() ?? 60)
-            let names = (reservedNames + rows.map(\.name)).map(width).max() ?? 80
-            contentWidth = min(max(1, min(450, maximumWidth) - 87), max(180, max(width(title), names + 12 + statusWidth)))
+            if rows.isEmpty {
+                let names = reservedNames.map(width).max() ?? 80
+                contentWidth = min(max(1, min(450, maximumWidth) - 87), max(180, max(width(title), names + 12 + statusWidth)))
+            } else {
+                let nameWidth = min(150, max(1, min(450, maximumWidth) - 87 - 12 - statusWidth))
+                contentWidth = nameWidth + 12 + statusWidth
+            }
         }
-        bodyHeight = rows.isEmpty ? 24 + 36 + 30 : 24 + max(36, (connection ? 0 : 36) + 27 * CGFloat(rows.count))
+        bodyHeight = rows.isEmpty ? 36 + 36 + 30 : 36 + max(36, (connection ? 0 : 36) + 27 * CGFloat(rows.count))
         return .init(width: contentWidth + 111, height: bodyHeight + 24)
     }
 
@@ -193,13 +208,13 @@ private final class NoticeView: NSView {
         NSBezierPath(roundedRect: iconRect, xRadius: 13.5, yRadius: 13.5).addClip()
         icon.draw(in: iconRect)
         NSGraphicsContext.restoreGraphicsState()
-        var y: CGFloat = 24
+        var y: CGFloat = 30
         let x: CGFloat = 81
         if !connection { drawText(title, at: .init(x: x, y: y), width: contentWidth, height: 36); y += 36 }
         if rows.isEmpty { drawText(english ? "No devices to switch" : "전환할 기기가 없음", at: .init(x: x, y: y), width: contentWidth, height: 30); return }
-        if connection { y += max(0, (bodyHeight - 24 - 27 * CGFloat(rows.count)) / 2) }
+        if connection { y += max(0, (bodyHeight - 36 - 27 * CGFloat(rows.count)) / 2) }
         for row in rows {
-            drawText(row.name, at: .init(x: x, y: y), width: max(20, contentWidth - statusWidth - 12))
+            drawText(row.name, at: .init(x: x, y: y), width: max(1, contentWidth - statusWidth - 12))
             let status = status(row.state)
             drawText(status.0, at: .init(x: x + contentWidth - statusWidth, y: y), width: statusWidth, color: status.1)
             y += 27
@@ -209,7 +224,7 @@ private final class NoticeView: NSView {
         switch state {
         case .complete: (english ? "Complete" : "완료", NSColor(srgbRed: 0, green: 230/255, blue: 118/255, alpha: 1))
         case .failed: (english ? "Failed" : "실패", NSColor(srgbRed: 229/255, green: 57/255, blue: 53/255, alpha: 1))
-        case .unconfirmed: (english ? "Needs confirmation" : "확인 필요", .white)
+        case .unconfirmed: (english ? "Unconfirmed" : "확인 필요", .white)
         case .connected: (english ? "Connected" : "연결됨", .white)
         case .switching: (english ? "Switching" : "전환 중", .white)
         }
@@ -217,6 +232,7 @@ private final class NoticeView: NSView {
     private func width(_ string: String) -> CGFloat { (string as NSString).size(withAttributes: [.font: font]).width }
     private func drawText(_ string: String, at point: NSPoint, width: CGFloat, height: CGFloat = 27, color: NSColor = .white) {
         let paragraph = NSMutableParagraphStyle(); paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.alignment = .left
         let textHeight = (string as NSString).size(withAttributes: [.font: font]).height
         (string as NSString).draw(in: .init(x: point.x, y: point.y + (height - textHeight) / 2, width: width, height: max(28, textHeight)),
                                  withAttributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
