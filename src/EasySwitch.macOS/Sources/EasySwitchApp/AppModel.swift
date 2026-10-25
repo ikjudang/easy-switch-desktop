@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
     @Published var channelLabels = ["", "", ""]
     @Published var showCodeLogs = false
     @Published var codeLogs: [String] = []
+    let pageRequests = PassthroughSubject<AppPage, Never>()
     var onShowMainWindow: (() -> Void)?
     var onLanguageChanged: (() -> Void)?
     var floatingSizeScreenBounds: NSRect?
