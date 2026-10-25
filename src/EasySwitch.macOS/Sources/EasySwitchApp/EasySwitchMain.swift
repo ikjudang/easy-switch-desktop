@@ -52,11 +52,13 @@ struct EasySwitchMain {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let arguments: [String]
     private var model: AppModel?
     private var controller: AppWindowController?
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
+    private var fullQuitRequested = false
     private var terminating = false
 
     init(arguments: [String]) { self.arguments = arguments }
@@ -84,8 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller = AppWindowController(model: model)
             controller?.onClose = { NSApp.setActivationPolicy(.accessory) }
             buildMenu()
-            presentAtLaunch(inBackground: background)
-            log.write(background ? "백그라운드 시작: 메뉴 막대 상주, 메인 창 표시 안 함" : "사용자 실행: 메인 창 표시")
+            presentAtLaunch()
+            log.write(background ? "백그라운드 시작: 메뉴 막대 상주, 메인 창 표시 안 함" : "사용자 실행: 메뉴 막대 상주, 메인 창 표시 안 함")
             model.start()
             LoginStartup.registerIfNeeded(log: log)
         } catch {
@@ -121,13 +123,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.image = StatusBarIcon.makeImage()
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked(_:))
-        item.button?.sendAction(on: .leftMouseUp)
-        item.button?.toolTip = t("클릭: 플로팅 버튼 켜기", "Click: show floating button")
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        item.button?.toolTip = t("좌클릭: 플로팅 버튼 켜기 · 우클릭: 메뉴 열기", "Left-click: show floating button · Right-click: open menu")
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.addItem(withTitle: t("EasySwitch 열기", "Open EasySwitch"), action: #selector(showMainWindow), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        for channel in 1...3 {
+            let entry = menu.addItem(withTitle: t("채널 \(channel)로 전환", "Switch to channel \(channel)"), action: #selector(switchFromMenu(_:)), keyEquivalent: "")
+            entry.target = self; entry.tag = channel
+        }
+        menu.addItem(.separator())
+        let floating = menu.addItem(withTitle: "", action: #selector(toggleFloating), keyEquivalent: "")
+        floating.target = self; floating.tag = 99
+        let follow = menu.addItem(withTitle: t("키보드를 따라 마우스 전환", "Follow keyboard with mouse"), action: #selector(toggleFollow), keyEquivalent: "")
+        follow.target = self; follow.tag = 100
+        menu.addItem(withTitle: t("연결 로그", "Connection log"), action: #selector(openLogs), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: t("EasySwitch 종료", "Quit EasySwitch"), action: #selector(quit), keyEquivalent: "q").target = self
+        statusMenu = menu
         item.menu = nil
         statusItem = item
     }
 
     @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            openStatusMenu()
+            return
+        }
         handleStatusItemClick()
     }
 
@@ -138,26 +161,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model?.log.write("메뉴 막대 클릭: 플로팅 버튼 표시 요청")
     }
 
-    private func presentAtLaunch(inBackground: Bool) {
-        if inBackground { NSApp.setActivationPolicy(.accessory) }
-        else { showMainWindow() }
+    private func openStatusMenu() {
+        guard let statusItem, let statusMenu, let button = statusItem.button else { return }
+        menuNeedsUpdate(statusMenu)
+        // Let AppKit anchor and size the menu as a status-item menu.
+        // A generic popup at the button's origin can clip above the menu bar.
+        statusItem.menu = statusMenu
+        button.performClick(nil)
     }
+
+    func menuDidClose(_ menu: NSMenu) {
+        // Restore the button action so the next left click only shows floating.
+        if statusItem?.menu === menu { statusItem?.menu = nil }
+    }
+
+    private func presentAtLaunch() { NSApp.setActivationPolicy(.accessory) }
 
     @objc private func showMainWindow() {
         NSApp.setActivationPolicy(.regular)
         controller?.showWindow(nil); controller?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
-    @objc private func quit() { NSApp.terminate(nil) }
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard let model else { return }
+        if let entry = menu.item(withTag: 99) {
+            entry.title = model.floatingEnabled ? model.t("플로팅 버튼 끄기", "Turn floating button off") : model.t("플로팅 버튼 켜기", "Turn floating button on")
+        }
+        menu.item(withTag: 100)?.state = model.followEnabled ? .on : .off
+    }
+    @objc private func toggleFloating() { model?.floatingEnabled.toggle() }
+    @objc private func toggleFollow() {
+        guard let model else { return }
+        model.setFollowEnabled(!model.followEnabled)
+    }
+    @objc private func switchFromMenu(_ sender: NSMenuItem) { model?.switchChannel(sender.tag, source: "T") }
+    @objc private func openLogs() {
+        showMainWindow()
+        model?.pageRequests.send(.logs)
+    }
+    @objc private func quit() {
+        fullQuitRequested = true
+        NSApp.terminate(nil)
+    }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showMainWindow(); return false
+        model?.log.write("사용자가 앱 다시 열기 요청: 메인 창 표시")
+        showMainWindow()
+        return false
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model, !terminating else { return .terminateNow }
+        if shouldKeepRunning(afterQuitEvent: NSAppleEventManager.shared().currentAppleEvent) {
+            controller?.window?.close()
+            NSApp.setActivationPolicy(.accessory)
+            model.log.write("일반 종료 요청: 메인 창·Dock 숨김, 메뉴 막대·기기 감시 유지")
+            return .terminateCancel
+        }
         terminating = true
         Task { await model.stop(); NSApp.reply(toApplicationShouldTerminate: true) }
         return .terminateLater
+    }
+
+    private func shouldKeepRunning(afterQuitEvent event: NSAppleEventDescriptor?) -> Bool {
+        guard !fullQuitRequested else { return false }
+        // Dock Quit hides the main UI. System logout/restart/shutdown must still
+        // be allowed to stop the resident process through the normal cleanup.
+        guard event?.eventClass == kCoreEventClass, event?.eventID == kAEQuitApplication,
+              let reason = event?.paramDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue else { return true }
+        return ![kAEQuitAll, kAEShutDown, kAERestart, kAEReallyLogOut].contains(reason)
     }
 
     private func renderFixtures(to directory: URL) async throws {
@@ -225,19 +296,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let backgroundProbe = AppDelegate(arguments: [])
         backgroundProbe.model = empty
         backgroundProbe.controller = AppWindowController(model: empty, storesFrame: false)
+        backgroundProbe.controller?.onClose = { NSApp.setActivationPolicy(.accessory) }
+        backgroundProbe.buildMenu()
         let priorPolicy = NSApp.activationPolicy()
-        backgroundProbe.presentAtLaunch(inBackground: LoginStartup.startsInBackground(arguments: [], event: loginEvent))
-        let hiddenAtLogin = backgroundProbe.controller?.window?.isVisible == false && NSApp.activationPolicy() == .accessory
+        backgroundProbe.presentAtLaunch()
+        let hiddenAtLaunch = backgroundProbe.controller?.window?.isVisible == false && NSApp.activationPolicy() == .accessory
         empty.floatingEnabled = false
         backgroundProbe.handleStatusItemClick()
         let clickShowsOnlyFloating = empty.floatingEnabled && backgroundProbe.controller?.window?.isVisible == false
         backgroundProbe.showMainWindow()
         let explicitOpenShowsWindow = backgroundProbe.controller?.window?.isVisible == true && NSApp.activationPolicy() == .regular
+        backgroundProbe.controller?.window?.performClose(nil)
+        let closeKeepsStatusItem = backgroundProbe.controller?.window?.isVisible == false
+            && NSApp.activationPolicy() == .accessory && backgroundProbe.statusItem?.button != nil
+            && !backgroundProbe.applicationShouldTerminateAfterLastWindowClosed(NSApp)
+        let handlesReopen = !backgroundProbe.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
+            && backgroundProbe.controller?.window?.isVisible == true && NSApp.activationPolicy() == .regular
+        backgroundProbe.showMainWindow()
+        let reopensAfterClose = backgroundProbe.controller?.window?.isVisible == true && NSApp.activationPolicy() == .regular
+        let quitReply = backgroundProbe.applicationShouldTerminate(NSApp)
+        let ordinaryQuitKeepsResident = quitReply == .terminateCancel && !backgroundProbe.terminating
+            && backgroundProbe.controller?.window?.isVisible == false
+            && NSApp.activationPolicy() == .accessory && backgroundProbe.statusItem?.button != nil
+        backgroundProbe.showMainWindow()
+        let reopensAfterQuit = backgroundProbe.controller?.window?.isVisible == true
+        let systemQuitReasonsPassThrough = [kAEQuitAll, kAEShutDown, kAERestart, kAEReallyLogOut].allSatisfy { reason in
+            let event = NSAppleEventDescriptor.appleEvent(withEventClass: kCoreEventClass, eventID: kAEQuitApplication,
+                                                         targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                                                         transactionID: AETransactionID(kAnyTransactionID))
+            event.setParam(NSAppleEventDescriptor(enumCode: reason), forKeyword: AEKeyword(kAEQuitReason))
+            return !backgroundProbe.shouldKeepRunning(afterQuitEvent: event)
+        }
+        backgroundProbe.fullQuitRequested = true
+        let explicitQuitStopsResident = !backgroundProbe.shouldKeepRunning(afterQuitEvent: nil)
+        backgroundProbe.fullQuitRequested = false
         backgroundProbe.controller?.window?.orderOut(nil)
+        if let item = backgroundProbe.statusItem { NSStatusBar.system.removeStatusItem(item) }
         NSApp.setActivationPolicy(priorPolicy)
-        let startupChecks = ["loginEventStartsWithoutMainWindow": hiddenAtLogin,
+        let startupChecks = ["launchStartsWithoutMainWindow": hiddenAtLaunch,
+                             "loginEventIsRecognized": LoginStartup.startsInBackground(arguments: [], event: loginEvent),
                              "backgroundClickEnablesSettingWithoutMainWindow": clickShowsOnlyFloating,
                              "explicitAppOpenShowsMainWindow": explicitOpenShowsWindow,
+                             "closingWindowKeepsStatusItemAndAppRunning": closeKeepsStatusItem,
+                             "userReopenShowsHiddenWindow": handlesReopen,
+                             "explicitOpenRestoresClosedWindow": reopensAfterClose,
+                             "ordinaryQuitHidesWindowAndKeepsResident": ordinaryQuitKeepsResident,
+                             "explicitOpenRestoresWindowAfterQuit": reopensAfterQuit,
+                             "systemQuitReasonsAllowTermination": systemQuitReasonsPassThrough,
+                             "explicitQuitAllowsFullTermination": explicitQuitStopsResident,
                              "manualLaunchIsNotLoginLaunch": !LoginStartup.startsInBackground(arguments: [], event: nil),
                              "backgroundArgumentIsRecognized": LoginStartup.startsInBackground(arguments: ["--background"], event: nil)]
         try JSONSerialization.data(withJSONObject: startupChecks, options: [.prettyPrinted, .sortedKeys])

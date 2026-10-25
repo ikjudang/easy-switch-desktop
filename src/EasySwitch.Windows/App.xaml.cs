@@ -223,7 +223,7 @@ public partial class App : Application
             item.Click += (_, _) => action();
             menu.Items.Add(item);
         }
-        Add(viewModel.T("Easy Switch 열기","Open Easy Switch"), show);
+        Add(viewModel.T("EasySwitch 열기","Open EasySwitch"), show);
         menu.Items.Add(new Separator());
         for (var target = 0; target < 3; target++)
         {
@@ -240,7 +240,7 @@ public partial class App : Application
         Add(viewModel.T("연결 로그","Connection log"), () => { viewModel.NavigateCommand.Execute("연결 로그"); show(); });
         Add(viewModel.T("로그인 전 실행 설치·업데이트","Install or update boot service"),async()=>{try{await viewModel.InstallBootServiceAsync();}catch(Exception error){viewModel.ReportNoticeError(error);}});
         menu.Items.Add(new Separator());
-        Add(viewModel.T("앱 종료","Exit"), exit);
+        Add(viewModel.T("EasySwitch 종료","Quit EasySwitch"), exit);
         menu.Closed += (_, _) => menu.Items.Clear();
         return menu;
     }

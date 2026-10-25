@@ -6,6 +6,7 @@ package_root="$repo_root/src/EasySwitch.macOS"
 configuration="${CONFIGURATION:-release}"
 output_root="$repo_root/build/macos"
 app_path="$output_root/EasySwitch.app"
+installed_app_path="/Applications/EasySwitch.app"
 
 check_signing_only=false
 if [[ "${1:-}" == "--check-signing" && $# -eq 1 ]]; then
@@ -53,8 +54,8 @@ with open(sys.argv[1], 'wb') as output:
         'CFBundleIdentifier': 'io.github.ikjudang.EasySwitch',
         'CFBundleExecutable': 'EasySwitch',
         'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '0.1.5',
-        'CFBundleVersion': '6',
+        'CFBundleShortVersionString': '0.1.6',
+        'CFBundleVersion': '7',
         'LSMinimumSystemVersion': '13.0',
         'NSHighResolutionCapable': True,
         'NSSupportsAutomaticTermination': False,
@@ -86,6 +87,10 @@ codesign --force --sign "$code_sign_identity" "$app_path"
 codesign --verify --deep --strict "$app_path"
 codesign --display --requirements - "$app_path"
 touch "$app_path"
+ditto "$app_path" "$installed_app_path"
+codesign --verify --deep --strict "$installed_app_path"
+touch "$installed_app_path"
 lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-if [[ -x "$lsregister" ]]; then "$lsregister" -f "$app_path"; fi
+if [[ -x "$lsregister" ]]; then "$lsregister" -f "$installed_app_path"; fi
 printf 'Local development app: %s\n' "$app_path"
+printf 'Installed app: %s\n' "$installed_app_path"

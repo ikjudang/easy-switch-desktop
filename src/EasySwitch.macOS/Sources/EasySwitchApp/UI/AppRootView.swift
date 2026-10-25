@@ -50,6 +50,7 @@ struct AppRootView: View {
         .font(AppTheme.body())
         .preferredColorScheme(.dark)
         .frame(minWidth: 860, minHeight: 558)
+        .onReceive(model.pageRequests) { page = $0 }
     }
 
     private var rail: some View {
@@ -85,7 +86,7 @@ struct AppRootView: View {
                     Text(model.followEnabled ? t("마우스 따라가기 켜짐", "Mouse follow on") : t("마우스 따라가기 꺼짐", "Mouse follow off"))
                         .font(AppTheme.body(11)).foregroundStyle(AppTheme.Text2)
                 }
-                Text("Easy Switch v0.1.5")
+                Text("Easy Switch v0.1.6")
                     .font(AppTheme.mono(11)).foregroundStyle(AppTheme.GlyphDisabled)
             }
             .padding(.leading, 6)
