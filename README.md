@@ -7,7 +7,7 @@ Windows와 macOS 앱을 제공한다. 아래 사용 안내는 Windows 앱을 기
 ## 다운로드
 
 - Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.31/EasySwitch-0.2.31-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.31/EasySwitch-0.2.31-fast-win-x64.zip)
-- macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.31/EasySwitch-0.1.4-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
+- macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.5/EasySwitch-0.1.5-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
 단일 실행 파일은 내려받은 파일을 실행한다. 빠른 실행 패키지는 압축을 푼 뒤 `EasySwitch.exe`를 실행하고, 함께 풀린 폴더와 파일을 유지한다. 별도의 런타임 설치는 필요 없다.
