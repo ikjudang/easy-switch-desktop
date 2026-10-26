@@ -310,6 +310,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void StoreSettings(AppSettings value)
     {
+        if(!_applyingService && EnginePreferences.From(value).ContentFingerprint!=EnginePreferences.From(_settings.Value).ContentFingerprint)
+            value=value with{EngineSettingsRevision=EnginePreferences.NextRevision(Math.Max(value.EngineSettingsRevision,_settings.Value.EngineSettingsRevision))};
         if(_deferUiWork)_=_settings.SaveDeferred(value);else _settings.Save(value);
     }
     private void SettingsSaveFailed(Exception error)=>_log.Post("설정 저장 실패: "+error.Message);
@@ -318,7 +320,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if(_monitor.Started && !_powerSuspended)throw new InvalidOperationException("기기 통로를 연 뒤 서비스로 변경할 수 없어.");
         _service=client;_serviceDevices=[];_engineFingerprint=EnginePreferences.From(_settings.Value).Fingerprint;
         _settings.Saved+=ServiceSettingsSaved;
-        client.SnapshotReceived+=snapshot=>ReceiveServiceSnapshot(snapshot,!client.ConfigurationPending);
+        client.InitialPreferencesCompared+=preferences=>
+        {
+            if(_settings.LoadError is not null || preferences.ContentFingerprint!=EnginePreferences.From(_settings.Value).ContentFingerprint)
+            {
+                _settings.PreserveServiceSynchronization(preferences.Apply(new()));
+                _log.Write("서비스 초기 동기화: 변경 전 앱·서비스 설정을 로컬 selection-backups에 보존함");
+            }
+        };
+        client.RestorePreferences(EnginePreferences.From(_settings.Value));
+        client.SnapshotReceived+=snapshot=>{if(ReferenceEquals(_service,client))ReceiveServiceSnapshot(snapshot,client.CanApplyPreferences(snapshot));};
         client.AvailabilityChanged+=available=>{if(!available)Dispatch(()=>{_serviceDevices=(_serviceDevices??[]).Select(d=>d with{Online=false}).ToArray();UpdateDevices();});};
     }
     internal async Task InstallBootServiceAsync()
@@ -343,6 +354,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void ReceiveServiceSnapshot(ServiceSnapshot snapshot,bool acceptPreferences)
     {
         if(Volatile.Read(ref _stopping)!=0)return;
+        if(_service is {} client && !client.IsCurrent(snapshot))return;
         foreach(var item in snapshot.Events)
         {
             if(item.Log is {} entry)_log.Import(entry);
@@ -378,11 +390,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void ApplyServiceSnapshot(ServiceSnapshot snapshot,bool acceptPreferences)
     {
+        if(_service is {} client && !client.IsCurrent(snapshot)){_log.Write("서비스 상태 반영 생략: 이전 연결의 응답");return;}
         var changed=_serviceDevices is null || !_serviceDevices.SequenceEqual(snapshot.Devices) || _lastDestination!=snapshot.LastDestination;
-        if(acceptPreferences && _service?.ConfigurationPending!=true && snapshot.Preferences.Fingerprint!=EnginePreferences.From(_settings.Value).Fingerprint)
+        var preferences=snapshot.Preferences;
+        if(preferences.Revision==0 && _settings.Value.EngineSettingsRevision>0)
+            preferences=preferences with{Revision=preferences.ContentFingerprint==EnginePreferences.From(_settings.Value).ContentFingerprint
+                ?_settings.Value.EngineSettingsRevision:EnginePreferences.NextRevision(_settings.Value.EngineSettingsRevision)};
+        if(acceptPreferences && (_service is null || _service.CanApplyPreferences(snapshot)) && preferences.Fingerprint!=EnginePreferences.From(_settings.Value).Fingerprint)
         {
             _applyingService=true;
-            try{StoreSettings(snapshot.Preferences.Apply(_settings.Value));_engineFingerprint=snapshot.Preferences.Fingerprint;changed=true;}
+            try{StoreSettings(preferences.Apply(_settings.Value));_engineFingerprint=preferences.Fingerprint;changed=true;}
             catch(Exception error)when(error is IOException or UnauthorizedAccessException){_log.Write("서비스 설정 반영 실패: "+error.Message);}
             finally{_applyingService=false;}
         }
@@ -392,7 +409,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     internal void ApplyEnginePreferences(EnginePreferences preferences)
     {
-        preferences.Validate();if(preferences.Fingerprint==EnginePreferences.From(_settings.Value).Fingerprint)return;
+        preferences.Validate();var current=EnginePreferences.From(_settings.Value);
+        if(preferences.Fingerprint==current.Fingerprint)return;
+        if(preferences.ContentFingerprint==current.ContentFingerprint)
+        {
+            if(preferences.Revision>current.Revision)StoreSettings(preferences.Apply(_settings.Value));
+            return;
+        }
         Save(preferences.Apply(_settings.Value),"Windows 서비스의 전환 설정 변경");
     }
     private async Task RefreshServiceAsync(){try{await _service!.RefreshAsync();}catch(Exception error)when(error is IOException or TimeoutException or OperationCanceledException){_log.Write("서비스 새로 고침 실패: "+error.Message);}}

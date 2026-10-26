@@ -11,6 +11,7 @@ public sealed record AppSettings
     public string? MouseName { get; init; }
     public string[]? SelectedDeviceIds { get; init; }
     public DeviceInfoCache[] SelectedDeviceNames { get; init; } = [];
+    public long EngineSettingsRevision { get; init; }
     public string? ExportDirectory { get; init; }
     public bool FloatingEnabled { get; init; }
     public bool BounceEnabled { get; init; } = true;
@@ -83,6 +84,14 @@ public sealed class SettingsStore
         return completion.Task;
     }
     public Task FlushAsync(){lock(_saveGate)return _lastSave;}
+    internal void PreserveServiceSynchronization(AppSettings service)
+    {
+        var backup=JsonSerializer.Serialize(new{Local=Value,Service=service,UnreadableLocal=LoadError is not null && File.Exists(_path)?File.ReadAllText(_path):null},new JsonSerializerOptions{WriteIndented=true});
+        var hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(backup)));
+        var directory=Path.Combine(Path.GetDirectoryName(_path)!,"selection-backups");Directory.CreateDirectory(directory);
+        var path=Path.Combine(directory,hash+".json");
+        if(!File.Exists(path))File.WriteAllText(path,backup);
+    }
     private void PersistPending()
     {
         while(true)
@@ -108,6 +117,7 @@ public sealed class SettingsStore
         FloatingSize=Math.Clamp(v.FloatingSize,0,200),FloatingTransparency=Math.Clamp(v.FloatingTransparency,0,100),
         FloatingAnimationSpeed=EasySwitch.Core.FloatingAnimationSpeed.Clamp(v.FloatingAnimationSpeed),
         ToastSize=Math.Clamp(v.ToastSize,50,200),ToastTransparency=Math.Clamp(v.ToastTransparency,0,100),
+        EngineSettingsRevision=v.EngineSettingsRevision is >=0 && v.EngineSettingsRevision<=DateTime.MaxValue.Ticks?v.EngineSettingsRevision:0,
         FloatingX=double.IsFinite(v.FloatingX)?Math.Clamp(v.FloatingX,0,1):.88,FloatingY=double.IsFinite(v.FloatingY)?Math.Clamp(v.FloatingY,0,1):.58,
         Language=v.Language=="en"?"en":"ko",
         ChannelLabels=v.ChannelLabels??["","",""],SelectedDeviceIds=v.SelectedDeviceIds?.Where(s=>!string.IsNullOrWhiteSpace(s)).Distinct().ToArray(),SelectedDeviceNames=v.SelectedDeviceNames??[],

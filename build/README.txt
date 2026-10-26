@@ -1,6 +1,6 @@
-EasySwitch Windows 0.2.36
+EasySwitch Windows 0.2.37
 
-이 폴더의 EasySwitch-0.2.36-win-x64.exe 파일을 실행한다. 별도의 런타임 설치는 필요 없다.
+이 폴더의 EasySwitch-0.2.37-win-x64.exe 파일을 실행한다. 별도의 런타임 설치는 필요 없다.
 업데이트와 다른 배포 파일: https://github.com/ikjudang/easy-switch-desktop/releases
 
 빠른 실행 패키지는 압축을 푼 뒤 EasySwitch.exe를 실행한다.

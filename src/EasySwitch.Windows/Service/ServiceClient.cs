@@ -7,17 +7,60 @@ namespace EasySwitch.Windows.Service;
 internal sealed class ServiceClient(AppLog log,string? fixturePipe=null,int? fixturePid=null):IAsyncDisposable
 {
     private sealed record Pending(ServiceRequest Request,TaskCompletionSource<ServiceReply> Completion);
+    private sealed record Configuration(EnginePreferences Preferences,long Revision);
     private readonly Channel<Pending> _requests=Channel.CreateBounded<Pending>(256);
     private readonly CancellationTokenSource _stop=new();private Task? _loop;
-    private EnginePreferences? _preferences;
+    private readonly object _configurationGate=new();
+    private Configuration? _preferences;
+    private EnginePreferences? _restoredPreferences;
+    private volatile bool _compareInitialPreferences;
+    private long _configurationRevision,_acknowledgedRevision,_connectionGeneration;
     private string? _epoch,_lastError;private long _after,_powerGeneration;private volatile bool _connected;
     private volatile bool _configuring;
     public bool Connected=>_connected;
-    public bool ConfigurationPending=>_configuring || Volatile.Read(ref _preferences) is not null;
+    public bool ConfigurationPending=>_configuring || _compareInitialPreferences || Volatile.Read(ref _preferences) is not null || ConfigurationRevision>Interlocked.Read(ref _acknowledgedRevision);
+    internal long ConfigurationRevision=>Interlocked.Read(ref _configurationRevision);
+    internal long ConnectionGeneration=>Interlocked.Read(ref _connectionGeneration);
     public event Action<ServiceSnapshot>? SnapshotReceived;
+    public event Action<EnginePreferences>? InitialPreferencesCompared;
     public event Action<bool>? AvailabilityChanged;
     public void Start()=>_loop??=Task.Run(RunAsync);
-    public void Configure(EnginePreferences preferences)=>Interlocked.Exchange(ref _preferences,preferences);
+    public void RestorePreferences(EnginePreferences preferences)
+    {
+        lock(_configurationGate)
+        {
+            if(_loop is not null)throw new InvalidOperationException("서비스 시작 전에 복원 설정을 지정해야 해.");
+            if(_configurationRevision!=0)return;
+            _restoredPreferences=preferences;_compareInitialPreferences=true;
+        }
+    }
+    public void Configure(EnginePreferences preferences)
+    {
+        lock(_configurationGate)
+        {
+            _compareInitialPreferences=false;_restoredPreferences=null;
+            Interlocked.Exchange(ref _preferences,new(preferences,Interlocked.Increment(ref _configurationRevision)));
+        }
+    }
+    internal bool IsCurrent(ServiceSnapshot snapshot)=>Connected && snapshot.ClientConnection==ConnectionGeneration && snapshot.Epoch==Volatile.Read(ref _epoch);
+    internal bool CanApplyPreferences(ServiceSnapshot snapshot)=>IsCurrent(snapshot) && !ConfigurationPending && snapshot.ClientRevision==ConfigurationRevision;
+    private void CompareInitialPreferences(ServiceSnapshot state,long revision)
+    {
+        EnginePreferences? restored;
+        lock(_configurationGate)restored=_compareInitialPreferences && revision==_configurationRevision?_restoredPreferences:null;
+        if(restored is null)return;
+        InitialPreferencesCompared?.Invoke(state.Preferences);
+        bool restore;
+        lock(_configurationGate)
+        {
+            // A user edit made during the comparison takes precedence over startup restoration.
+            if(!_compareInitialPreferences || revision!=_configurationRevision)return;
+            restore=restored.PreferRestoredOver(state.Preferences);
+            _compareInitialPreferences=false;_restoredPreferences=null;
+            if(restore)Interlocked.Exchange(ref _preferences,new(restored,Interlocked.Increment(ref _configurationRevision)));
+        }
+        log.Write($"서비스 초기 동기화: {(restore?"앱 저장 선택 적용 대기":"서비스 저장 설정 확인")} (앱 revision={restored.Revision}, 서비스 revision={state.Preferences.Revision})");
+    }
     public Task<ServiceReply> SwitchAsync(int target,string reason)=>RequestAsync(new("Switch",Target:target,Reason:reason,ExpiresAt:Environment.TickCount64+2000,PowerGeneration:Interlocked.Read(ref _powerGeneration)));
     public Task<ServiceReply> RefreshAsync()=>RequestAsync(new("Refresh",ExpiresAt:Environment.TickCount64+3000));
     public async Task ExportAsync(string path,bool codes)
@@ -54,25 +97,42 @@ internal sealed class ServiceClient(AppLog log,string? fixturePipe=null,int? fix
         while(!_stop.IsCancellationRequested)
         {
             Pending? current=null;
-            EnginePreferences? sendingPreferences=null;
+            Configuration? sendingPreferences=null;
             try
             {
                 await using var pipe=new NamedPipeClientStream(".",fixturePipe??ServiceRegistration.PipeName,PipeDirection.InOut,PipeOptions.Asynchronous,System.Security.Principal.TokenImpersonationLevel.Identification);
                 await pipe.ConnectAsync(1000,_stop.Token);ServiceRegistration.VerifyServer(pipe,fixturePid);
+                var connection=Interlocked.Increment(ref _connectionGeneration);
                 _connected=true;_lastError=null;AvailabilityChanged?.Invoke(true);
                 while(!_stop.IsCancellationRequested)
                 {
-                    var preferences=Interlocked.Exchange(ref _preferences,null);sendingPreferences=preferences;
+                    Configuration? preferences;long revision;
+                    lock(_configurationGate)
+                    {
+                        preferences=Interlocked.Exchange(ref _preferences,null);_configuring=preferences is not null;
+                        revision=preferences?.Revision??Interlocked.Read(ref _acknowledgedRevision);
+                    }
+                    sendingPreferences=preferences;
                     current=null;ServiceRequest request;
-                    if(preferences is not null){_configuring=true;request=new("Configure",Preferences:preferences);}
+                    if(preferences is not null)request=new("Configure",Preferences:preferences.Preferences);
                     else if(_requests.Reader.TryRead(out current))request=current.Request;
                     else request=new();
                     request=request with{Epoch=_epoch,After=_after};
                     using var deadline=CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);deadline.CancelAfter(4000);
                     await ServiceWire.WriteAsync(pipe,request,deadline.Token);
                     var reply=await ServiceWire.ReadAsync<ServiceReply>(pipe,deadline.Token);
-                    if(reply.State is {} state){Interlocked.Exchange(ref _powerGeneration,state.PowerGeneration);SnapshotReceived?.Invoke(state);_epoch=state.Epoch;_after=state.Sequence;}
-                    if(preferences is not null)_configuring=false;
+                    if(preferences is not null)
+                    {
+                        if(reply.Error is not null || reply.State is not {} confirmed || confirmed.Preferences.ContentFingerprint!=preferences.Preferences.ContentFingerprint)
+                            throw new IOException("서비스 설정 저장을 확인하지 못했어: "+(reply.Error??"요청한 설정과 응답이 달라."));
+                        Interlocked.Exchange(ref _acknowledgedRevision,preferences.Revision);_configuring=false;
+                    }
+                    if(reply.State is {} state)
+                    {
+                        CompareInitialPreferences(state,revision);
+                        Interlocked.Exchange(ref _powerGeneration,state.PowerGeneration);Volatile.Write(ref _epoch,state.Epoch);_after=state.Sequence;
+                        SnapshotReceived?.Invoke(state with{ClientConnection=connection,ClientRevision=revision});
+                    }
                     sendingPreferences=null;
                     if(reply.Error is {} error){if(current is null)log.Write("서비스 요청 실패: "+error);else current.Completion.TrySetException(new IOException(error));}
                     else current?.Completion.TrySetResult(reply);
