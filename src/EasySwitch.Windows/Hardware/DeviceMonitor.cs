@@ -6,8 +6,22 @@ using EasySwitch.Windows.Infrastructure;
 
 namespace EasySwitch.Windows.Hardware;
 
-internal sealed class DeviceMonitor(AppLog log) : IAsyncDisposable
+internal sealed class DeviceMonitor : IAsyncDisposable
 {
+    private readonly AppLog log;
+    private readonly DeviceRouteCache? _cache;
+    private HashSet<string> _expected=[];
+    internal DeviceMonitor(AppLog log,string? cacheDirectory=null)
+    {this.log=log;if(cacheDirectory is not null)_cache=new(cacheDirectory,log);}
+    internal DeviceRestoreStatus[] Restorations=>_cache?.Status??[];
+    internal void ExpectDevices(IEnumerable<string> ids)
+    {
+        var expected=ids.ToHashSet(StringComparer.Ordinal);
+        if(Volatile.Read(ref _expected).SetEquals(expected))return;
+        Volatile.Write(ref _expected,expected);_cache?.Expect(expected);
+        foreach(var device in _devices.Values)device.ExpectRestore(expected.Contains(device.Id));
+        Wake();
+    }
     private readonly ConcurrentDictionary<string, HidConnection> _connections = new();
     private readonly ConcurrentDictionary<string, byte> _initialized = new();
     private readonly ConcurrentDictionary<(string Key, int Index), HostDevice> _devices = new();
@@ -138,19 +152,35 @@ internal sealed class DeviceMonitor(AppLog log) : IAsyncDisposable
             var indices = connection.IsReceiver ? Enumerable.Range(1, 6) : [HidppConstants.DeviceIndexDirect];
             foreach (var index in indices)
             {
-                _devices.TryGetValue((connection.Key, index), out var previousDevice);
-                var device = new HostDevice(connection, index, log, previousDevice?.Info);
-                device.Changed += OnDeviceChanged;
-                device.FeatureReady += ReplayEarlyEvents;
-                device.LinkArrived += arrived => Arrived?.Invoke(arrived);
-                device.PairingInvalidated += invalidated => PairingInvalidated?.Invoke(invalidated);
-                _devices[(connection.Key, index)] = device;
+                RegisterDevice(connection,index);
             }
             connection.Start();
             log.Write($"[{connection.Name}] 공유 모드로 HID 통로 {channels.Count}개 열림");
             Track(InitializeConnectionAsync(connection));
         }
     }
+
+    internal HostDevice RegisterDevice(IDeviceTransport connection,int index,Func<long>? tickCount=null)
+    {
+        _devices.TryGetValue((connection.Key,index),out var previous);
+        var provisional=new HostDevice(connection,index,log,previous?.Info,tickCount);
+        var route=previous is not null && !connection.IsReceiver?null:_cache?.Find(provisional.Id);
+        var device=route is null?provisional:new HostDevice(connection,index,log,previous?.Info,tickCount,route);
+        device.ExpectRestore(Volatile.Read(ref _expected).Contains(device.Id));
+        device.Changed+=OnDeviceChanged;
+        device.RefreshCompleted+=device=>OnDeviceState(device,true);
+        device.FeatureReady+=ReplayEarlyEvents;
+        device.LinkArrived+=arrived=>{if(IsCurrent(arrived))Arrived?.Invoke(arrived);};
+        device.PairingInvalidated+=invalidated=>
+        {
+            if(!IsCurrent(invalidated))return;
+            _cache?.Invalidate(invalidated.Id);PairingInvalidated?.Invoke(invalidated);
+        };
+        _devices[(connection.Key,index)]=device;
+        _cache?.Stage(device.Id,DeviceRestoreStage.Checking,route is null?"새 통로에서 제어 연결 확인":"저장 통로 일치. 캐시의 실제 기기·제어 응답 검증");
+        return device;
+    }
+    private bool IsCurrent(HostDevice device)=>_devices.TryGetValue((device.ConnectionKey,device.Index),out var current) && ReferenceEquals(device,current);
 
     private async Task InitializeConnectionAsync(HidConnection connection)
     {
@@ -162,18 +192,25 @@ internal sealed class DeviceMonitor(AppLog log) : IAsyncDisposable
 
     private void OnClosed(HidConnection connection)
     {
+        if(_connections.TryGetValue(connection.Key,out var active) && !ReferenceEquals(active,connection))return;
         foreach (var key in _early.Keys.Where(k => k.Item1 == connection.Key).ToArray())
         {
             if (_early.TryRemove(key, out var queue) && !queue.IsEmpty)
                 log.Write($"[{connection.Name}] 보관 이벤트 폐기: feature 조회 전에 통로가 닫혀 새 연결에서 재생하지 않음");
         }
-        foreach (var device in _devices.Where(p => p.Key.Key == connection.Key).Select(p => p.Value)) device.MarkLinkClosed();
+        foreach (var device in _devices.Values.Where(device=>device.UsesTransport(connection))) device.MarkLinkClosed();
     }
 
     private void OnDeviceChanged(HostDevice device)
+        =>OnDeviceState(device,false);
+    private void OnDeviceState(HostDevice device,bool completed)
     {
         if (!_devices.TryGetValue((device.ConnectionKey, device.Index), out var current) || !ReferenceEquals(device, current)) return;
-        Changed?.Invoke();
+        var info=device.Info;
+        var ready=info.Online && device.IdentityReady;
+        _cache?.Stage(device.Id,ready?DeviceRestoreStage.Ready:completed?DeviceRestoreStage.Retrying:DeviceRestoreStage.Checking,ready?"현재 통로의 기기·채널 제어 응답 확인":"제어 응답 대기. 선택을 유지하고 자동 재시도");
+        if(ready)_cache?.Remember(info,device.WirelessProductId,device.ConnectionKey,device.Index);
+        if(!completed)Changed?.Invoke();
     }
 
     private void OnReceived(HidConnection connection, byte[] raw)
@@ -200,12 +237,12 @@ internal sealed class DeviceMonitor(AppLog log) : IAsyncDisposable
         }
         if (raw[3] != 0 || HidppFrameParser.IsError(raw)) return;
         if (!_devices.TryGetValue((connection.Key, (int)raw[1]), out var device)) return;
-        if (device.Info.FeatureIndex == 0 || device.CurrentHost is null)
+        if (device.Restoring || device.Info.FeatureIndex == 0 || device.CurrentHost is null)
         {
             var queue = _early.GetOrAdd((connection.Key, raw[1]), _ => new());
             if (queue.Hold(raw, device.ConnectionGeneration))
                 log.Write($"[{device.Name}] 초기 이벤트 보관 한도로 가장 오래된 프레임을 폐기함");
-            log.Write($"[{device.Name}] feature 조회 중 기기 이벤트 보관");
+            log.Write($"[{device.Name}] {(device.Restoring?"기기 복원 검증":"feature 조회")} 중 기기 이벤트 보관");
             return;
         }
         DecodeEvent(device, raw);
@@ -213,7 +250,7 @@ internal sealed class DeviceMonitor(AppLog log) : IAsyncDisposable
 
     private void ReplayEarlyEvents(HostDevice device)
     {
-        if (device.Info.FeatureIndex == 0 || device.CurrentHost is null) return;
+        if (device.Restoring || device.Info.FeatureIndex == 0 || device.CurrentHost is null) return;
         foreach (var key in _early.Keys.Where(k => k.Item2 == device.Index).ToArray())
         {
             if (!_devices.TryGetValue(key, out var owner) || !ReferenceEquals(owner, device)) continue;
@@ -248,5 +285,6 @@ internal sealed class DeviceMonitor(AppLog log) : IAsyncDisposable
         foreach (var connection in _connections.Values) await connection.DisposeAsync().ConfigureAwait(false);
         try { await Task.WhenAll(_operations.Keys).ConfigureAwait(false); }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+        if(_cache is not null)await _cache.FlushAsync().ConfigureAwait(false);
     }
 }

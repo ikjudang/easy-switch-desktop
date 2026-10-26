@@ -43,6 +43,7 @@ public sealed class SettingsStore
     private Task _lastSave=Task.CompletedTask;
     private readonly Action<AppSettings>? _persistOverride;
     public AppSettings Value => Volatile.Read(ref _value);
+    internal string StorageDirectory=>Path.GetDirectoryName(_path)!;
     public string? LoadError { get; private set; }
     public event Action<AppSettings>? Saved;
     public event Action<Exception>? SaveFailed;

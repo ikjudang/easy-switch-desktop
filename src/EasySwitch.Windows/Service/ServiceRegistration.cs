@@ -8,6 +8,7 @@ using System.ServiceProcess;
 using System.Text.Json;
 using Microsoft.Win32;
 using EasySwitch.Windows.Infrastructure;
+using EasySwitch.Windows.Hardware;
 
 namespace EasySwitch.Windows.Service;
 
@@ -124,10 +125,23 @@ internal static class ServiceInstaller
             var store=new SettingsStore(Path.Combine(ServiceRegistration.Root,"engine"));
             if(old is null){var initial=setup?.Preferences??EnginePreferences.From(new SettingsStore().Value);initial.Validate();store.Save(initial.Apply(new()));}
             var existed=ServiceRegistration.Installed;
-            if(existed){using var controller=new ServiceController(ServiceRegistration.Name);if(controller.Status!=ServiceControllerStatus.Stopped){controller.Stop();controller.WaitForStatus(ServiceControllerStatus.Stopped,TimeSpan.FromSeconds(25));}}
+            DeviceInfo[] handoff=[];
+            using var handoffLog=new AppLog(Path.Combine(ServiceRegistration.Root,"handoff-logs"));
+            if(existed)
+            {
+                using var controller=new ServiceController(ServiceRegistration.Name);
+                if(controller.Status!=ServiceControllerStatus.Stopped)
+                {
+                    try{handoff=ServiceDeviceHandoff.CaptureAsync().GetAwaiter().GetResult();}
+                    catch(Exception error)when(error is IOException or UnauthorizedAccessException or OperationCanceledException or System.Text.Json.JsonException or System.ComponentModel.Win32Exception)
+                    {handoffLog.Write("이전 서비스 기기 정보 인계 실패: "+error.Message+". 저장 캐시와 기존 선택을 유지하고 새로 검색함");}
+                    controller.Stop();controller.WaitForStatus(ServiceControllerStatus.Stopped,TimeSpan.FromSeconds(25));
+                }
+            }
             var binary='"'+target+"\" --service";
             try
             {
+                ServiceDeviceHandoff.ImportAsync(store.StorageDirectory,handoff,handoffLog).GetAwaiter().GetResult();
                 Sc(existed?"config":"create",ServiceRegistration.Name,"binPath=",binary,"start=","auto","obj=","LocalSystem","DisplayName=","EasySwitch Device Service");
                 Sc("description",ServiceRegistration.Name,"로그인 전·로그아웃 상태에서도 키보드 전환을 감시하고 마우스를 따라 전환합니다.");
                 Sc("failure",ServiceRegistration.Name,"reset=","86400","actions=","restart/1000/restart/3000/restart/10000");

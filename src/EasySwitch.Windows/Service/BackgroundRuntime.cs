@@ -115,7 +115,7 @@ internal sealed class BackgroundRuntime:IAsyncDisposable
                 default:throw new InvalidDataException("지원하지 않는 서비스 요청");
             }
             var journal=_journal.Read(request.Epoch,request.After);
-            return new(new(_journal.Epoch,journal.Sequence,_vm!.Devices.ToArray(),EnginePreferences.From(_settings!.Value),_vm.LastDestination,_vm.LastRequest,journal.Events,journal.Truncated,Interlocked.Read(ref _powerVersion)));
+            return new(new(_journal.Epoch,journal.Sequence,_vm!.DeviceSnapshot.ToArray(),EnginePreferences.From(_settings!.Value),_vm.LastDestination,_vm.LastRequest,journal.Events,journal.Truncated,Interlocked.Read(ref _powerVersion)));
         }
         catch(Exception error)when(error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException){return new(Error:error.Message);}
     }

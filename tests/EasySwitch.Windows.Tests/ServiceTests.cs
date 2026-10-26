@@ -14,6 +14,31 @@ namespace EasySwitch.Windows.Tests;
 
 public sealed class ServiceTests
 {
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task ServiceStateUsesCurrentDiscoveryInsteadOfAnOlderPresentationCollection(bool removed)
+    {
+        var root=Temp();var name="EasySwitch.CurrentState."+Guid.NewGuid().ToString("N");
+        await using var runtime=new BackgroundRuntime(root,name,WindowsIdentity.GetCurrent().User!.Value,true);
+        await runtime.StartAsync();
+        const BindingFlags hidden=BindingFlags.Instance|BindingFlags.NonPublic;
+        var dispatcher=(Dispatcher)typeof(BackgroundRuntime).GetField("_dispatcher",hidden)!.GetValue(runtime)!;
+        var vm=(MainViewModel)typeof(BackgroundRuntime).GetField("_vm",hidden)!.GetValue(runtime)!;
+        var current=new List<EasySwitch.Windows.Hardware.DeviceInfo>{new("key","Keyboard","Fixture","키보드",true,3,0,9)};
+        await dispatcher.InvokeAsync(()=>
+        {
+            vm.UsePreviewDevices(current);
+            if(removed)current.Clear();else current[0]=current[0] with{Online=false};
+            Assert.True(vm.Devices.Single().Online); // The presentation callback has not run yet.
+            Assert.False(vm.HardwareStarted);
+        });
+        using var pipe=new NamedPipeClientStream(".",name,PipeDirection.InOut,PipeOptions.Asynchronous);
+        await pipe.ConnectAsync(3000);await ServiceWire.WriteAsync(pipe,new ServiceRequest(),default);
+        var reply=await ServiceWire.ReadAsync<ServiceReply>(pipe,default);
+        Assert.Null(reply.Error);
+        if(removed)Assert.Empty(reply.State!.Devices);else Assert.False(reply.State!.Devices.Single().Online);
+    }
+
     [Fact]
     public void EngineSettingsDoNotCarryUiPreferencesOrExportPathsIntoSystemAccount()
     {
