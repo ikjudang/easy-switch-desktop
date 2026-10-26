@@ -120,7 +120,7 @@ public sealed class ServiceTests
         await using var restarted=new BackgroundRuntime(root,name,owner,true);await restarted.StartAsync();
         using var secondLog=new AppLog(Path.Combine(root,"second-ui"));await using var readOnly=new ServiceClient(secondLog,name,Environment.ProcessId);
         var states=new ConcurrentQueue<ServiceSnapshot>();readOnly.SnapshotReceived+=states.Enqueue;readOnly.Start();await Until(()=>states.Count>0);
-        Assert.Equal(expected.Fingerprint,states.Last().Preferences.Fingerprint);
+        Assert.Equal(expected.ContentFingerprint,states.Last().Preferences.ContentFingerprint);Assert.True(states.Last().Preferences.Revision>0);
         Assert.DoesNotContain(states.SelectMany(s=>s.Events),e=>e.Code?.Code.Contains("BEGIN")==true);
     }
     [Fact]
