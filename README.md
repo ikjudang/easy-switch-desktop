@@ -6,7 +6,7 @@ Windows와 macOS 앱을 제공한다. 아래 사용 안내는 Windows 앱을 기
 
 ## 다운로드
 
-- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.34/EasySwitch-0.2.34-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.34/EasySwitch-0.2.34-fast-win-x64.zip)
+- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.36/EasySwitch-0.2.36-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.36/EasySwitch-0.2.36-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.7/EasySwitch-0.1.7-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -56,6 +56,8 @@ Windows와 macOS 앱을 제공한다. 아래 사용 안내는 Windows 앱을 기
 설정에서 언어, 플로팅 버튼, 마우스 따라가기, 연결 로그와 로그 자동 저장을 관리한다. 언어는 한국어와 English를 지원한다.
 
 토스트는 기기의 연결과 채널 전환 상태를 안내한다. 이 안내는 앱이 관찰한 처리 상태이며, 다른 기기에서 실제 입력이 작동하는지는 사용자가 확인한다.
+
+사용자가 설정의 **토스트** 행을 누르면 크기와 투명도 설정이 펼쳐진다. 오른쪽 토글로 토스트를 켜거나 끈다. 앱은 변경한 값을 바로 반영하고 재실행 후에도 유지한다. 토스트를 꺼도 기기 전환과 로그 기록은 계속 동작한다.
 
 ## 로그
 

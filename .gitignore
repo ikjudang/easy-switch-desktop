@@ -105,6 +105,7 @@ artifacts/
 /src/EasySwitch.macOS/Sources/EasySwitchApp/UI/AppSettingsView.swift
 /src/EasySwitch.macOS/Sources/EasySwitchApp/UI/Theme.swift
 /tests/EasySwitch.Windows.Tests/Floating*.cs
+/tests/EasySwitch.Windows.Tests/ToastSettingsTests.cs
 /src/EasySwitch.macOS/Assets/README.md
 
 # User-facing build: track the executable and its accompanying documents only.

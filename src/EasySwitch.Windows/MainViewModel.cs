@@ -54,6 +54,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly LocalConnectionNotices _localConnections=new();
     private readonly DispatcherTimer _followExpiry=new(){Interval=TimeSpan.FromMilliseconds(500)};
     public event Action? FloatingSettingsChanged;
+    public event Action? ToastSettingsChanged;
     public event Action<SwitchNotice>? NoticeRequested;
     public event Action<SwitchNotice>? ConnectionNoticeRequested;
     public event Action<int>? KeyboardSwitchObserved;
@@ -151,6 +152,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         set { value = Math.Clamp(value, 0, 100); if (value == FloatingTransparency) return; SavePreference(_settings.Value with { FloatingTransparency = value }); FloatingSettingsChanged?.Invoke(); }
     }
     public AppSettings Preferences => _settings.Value;
+    public bool ToastEnabled
+    {
+        get=>_settings.Value.ToastEnabled;
+        set { if(value==ToastEnabled)return;SavePreference(_settings.Value with{ToastEnabled=value});ToastSettingsChanged?.Invoke(); }
+    }
+    public string ToastSettingsLabel=>ToastEnabled?T("토스트 켜짐","Toast · On"):T("토스트 꺼짐","Toast · Off");
+    public int ToastSize
+    {
+        get=>_settings.Value.ToastSize;
+        set { value=Math.Clamp(value,50,200);if(value==ToastSize)return;SavePreference(_settings.Value with{ToastSize=value});ToastSettingsChanged?.Invoke(); }
+    }
+    public int ToastTransparency
+    {
+        get=>_settings.Value.ToastTransparency;
+        set { value=Math.Clamp(value,0,100);if(value==ToastTransparency)return;SavePreference(_settings.Value with{ToastTransparency=value});ToastSettingsChanged?.Invoke(); }
+    }
     public bool BounceEnabled
     {
         get => _settings.Value.BounceEnabled;
