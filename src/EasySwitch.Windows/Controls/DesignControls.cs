@@ -34,6 +34,7 @@ internal sealed class AppIcon(string kind) : FrameworkElement
             case "mouse": Path("M12 2A5 5 0 0 1 17 7V17A5 5 0 0 1 7 17V7A5 5 0 0 1 12 2ZM12 5V9"); break;
             case "refresh": Path("M20 6V11H15M19.2 10A7.5 7.5 0 1 0 19 17"); break;
             case "clock": dc.DrawEllipse(null,pen,new(12,12),8,8); Path("M12 7.5V12L15.2 13.8"); break;
+            case "bell": Path("M18 8A6 6 0 0 0 6 8C6 15 3 16 3 16H21C21 16 18 15 18 8ZM10 20H14"); break;
             case "folder": Path("M3 7H9.5L11.5 9.5H21V19H3ZM3 7V5H10L12 7H21V9.5"); break;
             case "globe": dc.DrawEllipse(null,pen,new(12,12),9,9); dc.DrawEllipse(null,pen,new(12,12),4,9); Path("M3 12H21"); break;
             case "overlay": Path("M4 4H20V20H4ZM9 9H16V16H9Z"); break;

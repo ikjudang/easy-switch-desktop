@@ -18,6 +18,9 @@ public sealed record AppSettings
     public int FloatingTransparency { get; init; }
     public int FloatingSize { get; init; } = 100;
     public int FloatingAnimationSpeed { get; init; } = EasySwitch.Core.FloatingAnimationSpeed.Default;
+    public bool ToastEnabled { get; init; } = true;
+    public int ToastSize { get; init; } = 100;
+    public int ToastTransparency { get; init; }
     public double FloatingX { get; init; } = .88;
     public double FloatingY { get; init; } = .58;
     public string? FloatingMonitor { get; init; }
@@ -104,6 +107,7 @@ public sealed class SettingsStore
     {
         FloatingSize=Math.Clamp(v.FloatingSize,0,200),FloatingTransparency=Math.Clamp(v.FloatingTransparency,0,100),
         FloatingAnimationSpeed=EasySwitch.Core.FloatingAnimationSpeed.Clamp(v.FloatingAnimationSpeed),
+        ToastSize=Math.Clamp(v.ToastSize,50,200),ToastTransparency=Math.Clamp(v.ToastTransparency,0,100),
         FloatingX=double.IsFinite(v.FloatingX)?Math.Clamp(v.FloatingX,0,1):.88,FloatingY=double.IsFinite(v.FloatingY)?Math.Clamp(v.FloatingY,0,1):.58,
         Language=v.Language=="en"?"en":"ko",
         ChannelLabels=v.ChannelLabels??["","",""],SelectedDeviceIds=v.SelectedDeviceIds?.Where(s=>!string.IsNullOrWhiteSpace(s)).Distinct().ToArray(),SelectedDeviceNames=v.SelectedDeviceNames??[],
