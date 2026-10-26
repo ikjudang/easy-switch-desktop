@@ -245,7 +245,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _settings = settings;
         _log = log;
         _dispatcher = dispatcher;
-        _monitor = new DeviceMonitor(log);
+        _monitor = new DeviceMonitor(log,settings.StorageDirectory);
+        _monitor.ExpectDevices(SelectedIds);
         _switches = new SwitchCoordinator(log.Write);
         _page=HasSelection?"홈":"기기";
         NavigateCommand = new RelayCommand(p => Page = p?.ToString() ?? "홈");
@@ -304,6 +305,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public void Start() { if(_service is not null){_service.Start();return;}if (_previewDevices is null) {_monitor.Start();_followExpiry.Start();} }
 
     internal bool HardwareStarted=>_monitor.Started;
+    internal IReadOnlyList<DeviceInfo> DeviceSnapshot=>_serviceDevices??_previewDevices??_monitor.Snapshot();
+    internal DeviceRestoreStatus[] DeviceRestorations=>_monitor.Restorations;
     internal void EnableDeferredUiWork()
     {
         _deferUiWork=true;_log.EnableDeferredWrites();_settings.SaveFailed+=SettingsSaveFailed;
@@ -313,6 +316,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if(!_applyingService && EnginePreferences.From(value).ContentFingerprint!=EnginePreferences.From(_settings.Value).ContentFingerprint)
             value=value with{EngineSettingsRevision=EnginePreferences.NextRevision(Math.Max(value.EngineSettingsRevision,_settings.Value.EngineSettingsRevision))};
         if(_deferUiWork)_=_settings.SaveDeferred(value);else _settings.Save(value);
+        _monitor.ExpectDevices(SelectedIds);
     }
     private void SettingsSaveFailed(Exception error)=>_log.Post("설정 저장 실패: "+error.Message);
     internal void AttachService(ServiceClient client)
@@ -652,7 +656,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private void UpdateDevices()
     {
-        var snapshot = _serviceDevices ?? _previewDevices ?? _monitor.Snapshot();
+        var snapshot = DeviceSnapshot;
         _refreshing = true;
         try
         {
