@@ -9,12 +9,16 @@ private final class RoutingWorker: HIDWorkerSession, @unchecked Sendable {
     private var held: [CheckedContinuation<Void, Error>] = []
     private var writes: [String] = []
     private var blocking = false
+    private var failNext = false
     init(_ configuration: HIDWorkerConfiguration) { self.configuration = configuration }
     func start() { configuration.started(.success(())) }
     func requestStop() { release() }
     func stop() async { requestStop() }
     func snapshot() async -> [HIDDeviceDescriptor] { lock.withLock { descriptors } }
     func send(deviceID: String, bytes: [UInt8]) async throws {
+        if lock.withLock({ let fail = failNext; failNext = false; return fail }) {
+            throw HIDTransportError.writeFailed(Int32(bitPattern: 0xE00002D6))
+        }
         try await withCheckedThrowingContinuation { continuation in
             let hold = lock.withLock {
                 writes.append(deviceID)
@@ -25,6 +29,7 @@ private final class RoutingWorker: HIDWorkerSession, @unchecked Sendable {
         }
     }
     func block() { lock.withLock { blocking = true } }
+    func failOneWrite() { lock.withLock { failNext = true } }
     func release() {
         let continuations = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
             blocking = false; let result = held; held.removeAll(); return result
@@ -71,6 +76,33 @@ private func routingEventually(_ condition: @escaping @Sendable () -> Bool) asyn
 
 @Suite("Physical HID ownership and independent device writes")
 struct HIDMonitorRoutingTests {
+    @Test func outputTimeoutDoesNotRetireOrRecreateTheRoutingOwner() async throws {
+        let registry = RoutingWorkers()
+        let monitor = HIDMonitor(factory: { registry.make($0) })
+        try await monitor.start { _ in }
+        let device = routingDevice("fixture", physical: "fixture-link")
+        registry.discovery.emit(.added(device))
+        let owner = registry.device("fixture-link")
+        owner.emit(.added(device)); owner.failOneWrite()
+        do {
+            try await monitor.send(deviceID: device.id, bytes: [0x11] + Array(repeating: 0, count: 19))
+            Issue.record("Expected output timeout")
+        } catch HIDTransportError.writeFailed {} catch { Issue.record("Unexpected error: \(error)") }
+        #expect(await monitor.snapshot().contains { $0.id == device.id && $0.isOpen })
+        try await monitor.send(deviceID: device.id, bytes: [0x11] + Array(repeating: 0, count: 19))
+        #expect(registry.deviceCount == 1 && registry.device("fixture-link") === owner)
+        await monitor.stop()
+    }
+    @Test(arguments: [false, true]) func frameTraceOptionReachesDiscoveryAndDeviceWorkers(_ enabled: Bool) async throws {
+        let workers = RoutingWorkers()
+        let monitor = HIDMonitor(traceFrames: enabled, factory: { workers.make($0) })
+        try await monitor.start { _ in }
+        #expect(workers.discovery.configuration.traceFrames == enabled)
+        workers.discovery.emit(.added(routingDevice("fixture", physical: "fixture")))
+        #expect(await routingEventually { workers.deviceCount == 1 })
+        #expect(workers.device("fixture").configuration.traceFrames == enabled)
+        await monitor.stop()
+    }
     @Test func blockedKeyboardWriteDoesNotBlockAnotherBluetoothDevice() async throws {
         let registry = RoutingWorkers()
         let monitor = HIDMonitor(factory: { registry.make($0) })

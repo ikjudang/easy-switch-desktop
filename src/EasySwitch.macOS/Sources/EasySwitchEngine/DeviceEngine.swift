@@ -18,10 +18,18 @@ public struct DeviceState: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
-public enum EngineEvent: Sendable {
+public struct ReceiverState: Identifiable, Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+    public let bolt: Bool
+}
+
+public enum EngineEvent: Codable, Sendable {
     case devices([DeviceState]), scanning(Bool), status(String), selectionInvalidated(String), inputMonitoringRequired
     case notice(run: Int, target: Int, rows: [NoticeRow], connection: Bool)
     case keyboardDeparture(target: Int)
+    case keyboardArrival(id: String, channel: Int)
+    case receivers([ReceiverState]), pairing(ReceiverPairingProgress)
 }
 
 public actor DeviceEngine: DeviceSwitching {
@@ -48,34 +56,46 @@ public actor DeviceEngine: DeviceSwitching {
     private var routes: [String: Route] = [:]
     private var refreshes: [String: (token: UUID, task: Task<Void, Never>)] = [:]
     private var polling: Task<Void, Never>?
+    private var lastScanning: Bool?
     private var eventTask: Task<Void, Never>?
     private var eventContinuation: AsyncStream<HIDEvent>.Continuation?
     private var coordinator: SwitchCoordinator?
     private var callback: (@Sendable (EngineEvent) -> Void)?
-    private var selectedKeyboard: String?
-    private var selectedMouse: String?
+    private var selectedKeyboards: Set<String> = []
+    private var selectedMice: Set<String> = []
     private var follow = false
     private var manual = ManualSwitchGuard()
+    private var manualRunGenerations: [Int: UInt64] = [:]
     private var manualGeneration: UInt64 = 0
     private var manualPreparations: [String: UInt64] = [:]
-    private var manualSourceGeneration: UInt64?
+    private var manualSourceGenerations: Set<UInt64> = []
     private var deferredFollow: Task<Void, Never>?
     private var nextGeneration: UInt64 = 0
     private var started = false
+    private var stopping = false
+    private var relayConfiguration: (id: UUID, secret: Data?)?
+    private var relay: LANRelay?
+    private var notificationTasks: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+    private var notifiedReceivers: Set<String> = []
+    private var notificationRetryAfter: [String: Int64] = [:]
+    private var pairings: [String: ReceiverPairing] = [:]
+    private var pairingTokens: [String: UUID] = [:]
+    private var pairingTimeouts: [String: Task<Void, Never>] = [:]
     private let softwareID = 0x09
     private var noticeRun = 0
     private var requestStarts: [Int: Int64] = [:]
-    private var pendingFollow: (run: Int, target: Int)?
+    private var pendingFollow: (run: Int, target: Int, devices: Set<String>)?
 
-    public init(driver: any HIDDriving = HIDMonitor(), log: FileLog) {
+    public init(driver: (any HIDDriving)? = nil, log: FileLog) {
+        let driver = driver ?? HIDMonitor(traceFrames: log.traceFrames)
         self.driver = driver; self.log = log; self.router = RequestRouter(driver: driver, log: log)
     }
 
     public func start(onEvent: @escaping @Sendable (EngineEvent) -> Void) async throws {
         guard !started else { return }
-        started = true; callback = onEvent
+        started = true; stopping = false; callback = onEvent; lastScanning = nil
         coordinator = SwitchCoordinator(devices: self, log: { [log] in log.write($0) })
-        log.write("EasySwitch macOS 0.1.4 | softwareID=09 | read-only discovery | \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        log.write("EasySwitch macOS 0.1.9 | softwareID=09 | dynamic discovery | \(ProcessInfo.processInfo.operatingSystemVersionString)")
         log.writeCode("ES1|V0213|APP|START")
         let (stream, continuation) = AsyncStream<HIDEvent>.makeStream()
         eventContinuation = continuation
@@ -99,7 +119,14 @@ public actor DeviceEngine: DeviceSwitching {
     }
 
     public func stop() async {
+        stopping = true
+        polling?.cancel(); polling = nil
+        notificationTasks.values.forEach { $0.task.cancel() }; notificationTasks.removeAll()
+        for id in Array(pairings.keys) { await cancelPairing(id) }
+        relay?.stop(); relay = nil; relayConfiguration = nil
         started = false
+        notificationTasks.values.forEach { $0.task.cancel() }; notificationTasks.removeAll()
+        notifiedReceivers.removeAll(); notificationRetryAfter.removeAll()
         polling?.cancel(); polling = nil
         cancelDeferred(stage: "CAN_STOP")
         for item in refreshes.values { item.task.cancel() }
@@ -116,19 +143,37 @@ public actor DeviceEngine: DeviceSwitching {
     }
 
     public func configure(keyboardID: String?, mouseID: String?, followEnabled: Bool) async {
-        guard selectedKeyboard != keyboardID || selectedMouse != mouseID || follow != followEnabled else { return }
+        await configure(keyboardIDs: Set([keyboardID].compactMap { $0 }), mouseIDs: Set([mouseID].compactMap { $0 }), followEnabled: followEnabled)
+    }
+
+    public func configure(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool) async {
+        guard selectedKeyboards != keyboardIDs || selectedMice != mouseIDs || follow != followEnabled else { return }
         cancelDeferred(stage: "CAN_CFG")
         manualGeneration &+= 1
-        // Commit in this actor turn. An earlier configure may resume after a newer
-        // selection while cancellation crosses to the coordinator actor.
-        selectedKeyboard = keyboardID; selectedMouse = mouseID; follow = followEnabled
-        log.writeCode("ES1|V0213|CFG|F\(followEnabled ? 1 : 0)|K\(keyboardID == nil ? 0 : 1)|M\(mouseID == nil ? 0 : 1)")
-        log.write("따라가기 설정: enabled=\(followEnabled) keyboard=\(keyboardID ?? "none") mouse=\(mouseID ?? "none")")
+        selectedKeyboards = keyboardIDs; selectedMice = mouseIDs; follow = followEnabled
+        log.writeCode("ES1|V0213|CFG|F\(followEnabled ? 1 : 0)|K\(keyboardIDs.count)|M\(mouseIDs.count)")
+        log.write("따라가기 설정: enabled=\(followEnabled) keyboards=\(keyboardIDs.sorted()) mice=\(mouseIDs.sorted())")
         await coordinator?.cancelAll(reason: "선택 또는 따라가기 설정 변경")
     }
 
+    public func configureLAN(id: UUID, secret: Data?) {
+        if let current = relayConfiguration, current.id == id, current.secret == secret { return }
+        relayConfiguration = (id, secret)
+        relay?.stop(); relay = nil
+        guard let secret else { return }
+        do {
+            let relay = try LANRelay(id: id, secret: secret, log: { [log] in log.write($0) }, onArrival: { [weak self] channel in await self?.switchMice(channel) })
+            self.relay = relay; relay.start()
+        } catch { log.write("LAN 인증 설정 실패: \(error)") }
+    }
+
     public func refresh(force: Bool = false) {
-        guard started else { return }
+        guard started, !stopping else { return }
+        if follow {
+            for receiver in Set(endpoints.values.filter { $0.isReceiver && $0.isOpen }.map(\.physicalID)) {
+                prepareReceiverNotifications(receiver)
+            }
+        }
         for id in routes.keys where refreshes[id] == nil && (force || Self.nowMS >= routes[id]!.nextRefreshAt) {
             let token = UUID()
             let task = Task { [weak self] in
@@ -137,7 +182,50 @@ public actor DeviceEngine: DeviceSwitching {
             }
             refreshes[id] = (token, task)
         }
-        callback?(.scanning(!refreshes.isEmpty))
+        publishScanning()
+    }
+
+    private func publishScanning() {
+        let scanning = !refreshes.isEmpty
+        guard lastScanning != scanning else { return }
+        lastScanning = scanning
+        callback?(.scanning(scanning))
+    }
+
+    private func prepareReceiverNotifications(_ receiverID: String) {
+        guard !notifiedReceivers.contains(receiverID), notificationTasks[receiverID] == nil,
+              Self.nowMS >= (notificationRetryAfter[receiverID] ?? 0), outputEndpoint(receiverID) != nil else { return }
+        let token = UUID()
+        let task = Task { [weak self] in
+            await self?.enableReceiverNotifications(receiverID)
+            await self?.receiverNotificationsFinished(receiverID, token: token)
+        }
+        notificationTasks[receiverID] = (token, task)
+    }
+    private func receiverNotificationsFinished(_ id: String, token: UUID) {
+        if notificationTasks[id]?.token == token { notificationTasks[id] = nil }
+    }
+    private func enableReceiverNotifications(_ id: String) async {
+        guard started, !stopping, follow, let endpoint = outputEndpoint(id), endpoint.isReceiver else { return }
+        do {
+            let flags = try await router.request(deviceID: endpoint.id, responseDeviceID: id,
+                frame: ReceiverPairing.register(0, parameters: [], read: true))
+            guard started, !stopping, follow, !Task.isCancelled else { return }
+            if flags.param(1) & 1 == 0 {
+                let bytes = try ReceiverMessages.enableWirelessNotifications(registerReply: flags.bytes)
+                let update = try HidppFrame(reportType: .short, deviceIndex: 0xFF, featureIndex: bytes[2], funcSwByte: bytes[3], parameters: Array(bytes[4...6]))
+                _ = try await router.request(deviceID: endpoint.id, responseDeviceID: id, frame: update)
+            }
+            let verified = try await router.request(deviceID: endpoint.id, responseDeviceID: id,
+                frame: ReceiverPairing.register(0, parameters: [], read: true))
+            guard verified.param(1) & 1 != 0 else { throw EngineError.invalidResponse }
+            guard started, !Task.isCancelled else { return }
+            notifiedReceivers.insert(id)
+            log.write("[\(id)] 수신기 무선 알림 확인: 다른 설정 비트 보존")
+        } catch {
+            notificationRetryAfter[id] = Self.nowMS + 3000
+            if !Task.isCancelled { log.write("[\(id)] 수신기 무선 알림 설정 미확인; 재시도 예정: \(error)") }
+        }
     }
 
     private func finishedRefresh(_ id: String, token: UUID) {
@@ -148,7 +236,7 @@ public actor DeviceEngine: DeviceSwitching {
             let preparing = locallyAttached && (manualPreparations[id] != nil || (Self.nowMS - route.firstSeenAt < 15_000 && !route.state.online))
             routes[id]?.nextRefreshAt = Self.nowMS + (preparing ? 100 : 3000)
         }
-        callback?(.scanning(!refreshes.isEmpty))
+        publishScanning()
     }
 
     public func currentDevices() -> [DeviceState] {
@@ -158,13 +246,13 @@ public actor DeviceEngine: DeviceSwitching {
 
     public func switchChannel(_ channel: Int, source: String = "B",
                               presentNotice: (@Sendable (EngineEvent) async -> Void)? = nil) async {
-        guard (1...3).contains(channel), let coordinator else { log.write("수동 전환 생략: 잘못된 채널 또는 엔진 중지"); return }
+        guard !stopping, (1...3).contains(channel), let coordinator else { log.write("수동 전환 생략: 잘못된 채널 또는 엔진 중지"); return }
         cancelDeferred(stage: "CAN_MAN")
         manualGeneration &+= 1
         let generation = manualGeneration
         await coordinator.cancelAll(reason: "새 수동 요청")
         guard started, manualGeneration == generation else { log.write("수동 전환 취소: 엔진 중지 또는 더 최신 요청"); return }
-        let devices = Set([selectedKeyboard, selectedMouse].compactMap { $0 }).compactMap { id -> (id: String, connection: UInt64)? in
+        let devices = selectedKeyboards.union(selectedMice).compactMap { id -> (id: String, connection: UInt64)? in
             guard let route = routes[id], outputEndpoint(route.endpoint) != nil,
                   route.localLink != false, !route.departing else {
                 log.write("[\(id)] 수동 전환 생략: 선택한 기기의 로컬 연결 없음")
@@ -173,13 +261,14 @@ public actor DeviceEngine: DeviceSwitching {
             return (id, route.generation)
         }
         let run = beginRequest()
+        manualRunGenerations[run] = generation
         activity(run: run, target: channel - 1, source: source, role: "D1", stage: "BEGIN")
         guard !devices.isEmpty else {
             callback?(.status("전환할 기기가 없음")); callback?(.notice(run: run, target: channel - 1, rows: [], connection: false))
             activity(run: run, target: channel - 1, source: source, role: "D1", stage: "SKIP_LINK")
             log.write("수동 전환 생략: 선택된 로컬 기기 없음"); return
         }
-        manualSourceGeneration = selectedKeyboard.flatMap { routes[$0]?.generation }
+        manualSourceGenerations = Set(selectedKeyboards.compactMap { routes[$0]?.generation })
         manual.begin(generation: generation, target: channel - 1)
         let notice = EngineEvent.notice(run: run, target: channel - 1,
                                        rows: devices.compactMap { noticeRow($0.id, state: .switching) }, connection: false)
@@ -200,6 +289,107 @@ public actor DeviceEngine: DeviceSwitching {
         }
         manual.complete(generation: generation)
         if manualGeneration == generation { callback?(.status("기기별 전환 결과를 로그에 기록했어")) }
+    }
+
+    public func cancelUnpresentedRequest(_ run: Int) async {
+        guard manualRunGenerations[run] == manualGeneration else { return }
+        manualGeneration &+= 1
+        await coordinator?.cancelAll(reason: "화면 표시 확인 만료")
+        log.write("수동 전환 취소: 초기 안내 표시를 확인하지 못함; 요청 \(run)")
+    }
+
+    public func switchMice(_ channel: Int, source: String = "L") async {
+        guard started, !stopping, follow, (1...3).contains(channel), let coordinator else { log.write("LAN 마우스 전환 생략: 따라가기 꺼짐 또는 엔진/채널 없음"); return }
+        cancelDeferred(stage: "CAN_LAN"); manualGeneration &+= 1
+        let generation = manualGeneration
+        await coordinator.cancelAll(reason: "인증된 LAN 키보드 도착")
+        guard generation == manualGeneration else { return }
+        let run = beginRequest()
+        let mice = selectedMice.sorted()
+        if mice.isEmpty { log.write("LAN 마우스 전환 생략: 선택 마우스 없음") }
+        await withTaskGroup(of: Void.self) { group in
+            for id in mice {
+                guard let route = routes[id], route.localLink != false, !route.departing else { log.write("[\(id)] LAN 전환 생략: 로컬 연결 없음"); continue }
+                group.addTask { await self.switchManualWhenReady(id, connection: route.generation, generation: generation, target: channel - 1, run: run, source: source) }
+            }
+        }
+    }
+
+    public func beginPairing(_ receiverID: String) async {
+        guard started, !stopping, let endpoint = outputEndpoint(receiverID), endpoint.isReceiver,
+              endpoint.productID == 0xC548 || endpoint.productID == 0xC52B else {
+            log.write("수신기 페어링 생략: 지원 수신기 없음"); return
+        }
+        guard pairings[receiverID] == nil else { log.write("수신기 페어링 생략: 이미 진행 중"); return }
+        let token = UUID(); pairingTokens[receiverID] = token
+        var known = Set(routes.values.filter { $0.endpoint == receiverID && ($0.metadataRead || $0.wirelessProductID != nil) }.map { UInt8($0.index) })
+        // Reserve the session before the first await, so repeated UI clicks cannot
+        // start overlapping discovery commands on the same receiver.
+        pairings[receiverID] = ReceiverPairing(receiverID: receiverID, bolt: endpoint.productID == 0xC548, knownSlots: known)
+        if endpoint.productID == 0xC52B {
+            do {
+                for slot in UInt8(1)...UInt8(6) {
+                    do {
+                        _ = try await router.request(deviceID: endpoint.id, responseDeviceID: receiverID,
+                            frame: ReceiverPairing.register(0xB5, parameters: [0x20 + slot - 1], read: true))
+                        known.insert(slot)
+                    } catch EngineError.protocolError(let bytes) {
+                        guard let error = HidppParser.parseError(bytes), error.protocolVersion == 1,
+                              [8, 9].contains(error.errorCode) else { throw EngineError.protocolError(bytes) }
+                    }
+                    guard pairingTokens[receiverID] == token else { return }
+                }
+            } catch {
+                log.write("수신기 페어링 중단: 기존 슬롯 확인 실패; 등록 목록을 추측하지 않음: \(error)")
+                if pairingTokens[receiverID] == token { await cancelPairing(receiverID) }; return
+            }
+        }
+        let pairing = ReceiverPairing(receiverID: receiverID, bolt: endpoint.productID == 0xC548, knownSlots: known)
+        pairings[receiverID] = pairing
+        do {
+            // Preserve existing flag bytes and add only wireless notifications.
+            let flags = try await router.request(deviceID: endpoint.id, responseDeviceID: receiverID,
+                frame: ReceiverPairing.register(0, parameters: [], read: true))
+            guard pairingTokens[receiverID] == token else { return }
+            let bytes = try ReceiverMessages.enableWirelessNotifications(registerReply: flags.bytes)
+            let update = try HidppFrame(reportType: .short, deviceIndex: 0xFF, featureIndex: bytes[2], funcSwByte: bytes[3], parameters: Array(bytes[4...6]))
+            _ = try await router.request(deviceID: endpoint.id, responseDeviceID: receiverID, frame: update)
+            let verified = try await router.request(deviceID: endpoint.id, responseDeviceID: receiverID,
+                frame: ReceiverPairing.register(0, parameters: [], read: true))
+            guard verified.param(1) & 1 != 0 else { throw EngineError.invalidResponse }
+            guard pairingTokens[receiverID] == token else { return }
+            _ = try await router.request(deviceID: endpoint.id, responseDeviceID: receiverID, frame: pairing.search())
+            guard pairingTokens[receiverID] == token, let current = pairings[receiverID] else { return }
+            callback?(.pairing(current.progress))
+            pairingTimeouts[receiverID] = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(90)) } catch { return }
+                await self?.expirePairing(receiverID, token: token)
+            }
+        } catch { log.write("수신기 페어링 시작 실패: \(error)"); if pairingTokens[receiverID] == token { await cancelPairing(receiverID) } }
+    }
+
+    public func confirmPairing(_ receiverID: String) async {
+        guard var pairing = pairings[receiverID], let token = pairingTokens[receiverID], let endpoint = outputEndpoint(receiverID) else { return }
+        do {
+            let command = try pairing.confirm(); pairings[receiverID] = pairing
+            _ = try await router.request(deviceID: endpoint.id, responseDeviceID: receiverID, frame: command)
+            if pairingTokens[receiverID] == token, let latest = pairings[receiverID] { callback?(.pairing(latest.progress)) }
+        } catch { log.write("수신기 페어링 확인 실패: \(error)"); if pairingTokens[receiverID] == token { await cancelPairing(receiverID) } }
+    }
+
+    private func expirePairing(_ receiverID: String, token: UUID) async {
+        guard pairingTokens[receiverID] == token else { return }
+        await cancelPairing(receiverID)
+    }
+    public func cancelPairing(_ receiverID: String) async {
+        pairingTokens[receiverID] = nil
+        pairingTimeouts.removeValue(forKey: receiverID)?.cancel()
+        guard let pairing = pairings.removeValue(forKey: receiverID) else { return }
+        if let endpoint = outputEndpoint(receiverID) {
+            do { _ = try await router.request(deviceID: endpoint.id, responseDeviceID: receiverID, frame: pairing.cancel()) }
+            catch { log.write("수신기 페어링 취소 미확인: \(error)") }
+        }
+        callback?(.pairing(.init(receiverID: receiverID, stage: "closed")))
     }
 
     public func switchSnapshot(_ id: String) -> SwitchSnapshot? {
@@ -243,10 +433,17 @@ public actor DeviceEngine: DeviceSwitching {
         latest.localLink = true; latest.observedLocally = true; latest.departing = false
         latest.state.online = true; latest.state.currentHost = host.currentHost; latest.state.hostCount = host.hostCount
         routes[id] = latest
+        if !route.state.online {
+            log.write("[\(id)] 기기 연결 확인: name=\(latest.state.name) channel=\(host.currentHost + 1) evidence=host_info_response")
+        }
+        if !route.state.online, selectedKeyboards.contains(id) {
+            callback?(.keyboardArrival(id: id, channel: host.currentHost + 1))
+            if follow { relay?.keyboardArrived(channel: host.currentHost + 1) }
+        }
         if !route.state.online, latest.metadataRead, let row = noticeRow(id, state: .connected) {
             callback?(.notice(run: 0, target: 0, rows: [row], connection: true))
         }
-        if returned, id == selectedKeyboard {
+        if returned, selectedKeyboards.contains(id) {
             cancelDeferred(stage: "CAN_RET")
             manualGeneration &+= 1
             await coordinator?.cancelAll(reason: "키보드 로컬 연결 재확인")
@@ -298,7 +495,10 @@ public actor DeviceEngine: DeviceSwitching {
             if let error = HidppParser.parseError(raw), error.protocolVersion == 1, error.errorCode == 9 {
                 routes[id]?.nextRefreshAt = Self.nowMS + 30_000
                 log.write("[\(id)] 수신기가 없는 슬롯으로 응답; 30초 뒤 재조회")
-            } else { log.write("[\(id)] 조회 프로토콜 오류: \(RequestRouter.hex(raw))") }
+            } else {
+                log.write("[\(id)] 조회 프로토콜 오류: version=\(HidppParser.parseError(raw)?.protocolVersion ?? 0) code=\(HidppParser.parseError(raw).map { Int($0.errorCode) } ?? -1)")
+                log.writeTrace("[\(id)] 조회 오류 frame=\(RequestRouter.hex(raw))")
+            }
         }
         catch {
             log.write("[\(id)] 조회 미완료: \(error); 응답 없음은 빈 슬롯 또는 로컬 이탈의 증거가 아님")
@@ -336,8 +536,11 @@ public actor DeviceEngine: DeviceSwitching {
         case .added(let descriptor):
             let hadPhysicalEndpoint = outputEndpoint(descriptor.physicalID) != nil
             endpoints[descriptor.id] = descriptor
-            log.write("HID 열거: \(descriptor)")
+            log.writeTrace("HID 열거: \(descriptor)")
             guard descriptor.isHidppCandidate else { return }
+            if !hadPhysicalEndpoint || !descriptor.isOpen {
+                log.write("HID 통로: name=\(descriptor.name) connection=\(descriptor.transport) open=\(descriptor.isOpen) result=\(descriptor.openResult.map(String.init) ?? "unknown")")
+            }
             guard descriptor.isOpen else {
                 if let result = descriptor.openResult, HIDTransportError.isPermissionDenied(result) {
                     callback?(.inputMonitoringRequired)
@@ -362,19 +565,22 @@ public actor DeviceEngine: DeviceSwitching {
                     if !descriptor.isReceiver, descriptor.transport.localizedCaseInsensitiveContains("bluetooth"),
                        let serial = descriptor.serialNumber, !serial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         routes[id]?.metadataRead = previous.metadataRead
-                        if previous.metadataRead { log.write("[\(id)] 같은 블루투스 기기 재연결: 확인한 이름·종류 유지; 새 채널 응답으로 연결 확인") }
+                        if previous.metadataRead { log.write("[\(id)] 같은 블루투스 기기의 HID 통로 재열거: 확인한 이름·종류 유지; 연결은 새 채널 응답으로 확인 예정") }
                     }
                 }
-                if id == selectedKeyboard {
+                if selectedKeyboards.contains(id) {
                     cancelDeferred(stage: "CAN_RET")
                     manualGeneration &+= 1
-                    await coordinator?.cancelAll(reason: "키보드 HID 재도착")
+                    await coordinator?.cancelAll(reason: "키보드 HID 통로 재열거")
                 }
             }
             publish(); refresh()
         case .removed(let endpointID):
             guard let removed = endpoints.removeValue(forKey: endpointID) else { return }
             guard outputEndpoint(removed.physicalID) == nil else { return }
+            if removed.isReceiver { await cancelPairing(removed.physicalID) }
+            notificationTasks.removeValue(forKey: removed.physicalID)?.task.cancel()
+            notifiedReceivers.remove(removed.physicalID); notificationRetryAfter[removed.physicalID] = nil
             await router.disconnect(removed.physicalID)
             for id in routes.keys where routes[id]?.endpoint == removed.physicalID {
                 routes[id]?.revision &+= 1; routes[id]?.localLink = false; routes[id]?.state.online = false
@@ -387,15 +593,26 @@ public actor DeviceEngine: DeviceSwitching {
             // A macOS IOHIDDevice can expose generic input and the vendor collection together.
             // Never copy ordinary keyboard/mouse reports into diagnostic files.
             guard reportID == 0x10 || reportID == 0x11 else { return }
-            log.write("RX \(deviceID) reportID=\(reportID) raw=\(RequestRouter.hex(bytes))")
+            log.writeTrace("RX \(deviceID) reportID=\(reportID) raw=\(RequestRouter.hex(bytes))")
             do {
                 let raw = try HIDReportNormalizer.normalize(reportID: reportID, bytes: bytes)
                 guard let endpoint = endpoints[deviceID] else { return }
                 await router.receive(deviceID: endpoint.physicalID, bytes: raw)
                 guard raw.count >= 7 else { return }
                 let id = "\(endpoint.physicalID)#\(raw[1])"
+                if var pairing = pairings[endpoint.physicalID], let frame = HidppParser.parse(raw) {
+                    let before = pairing.progress
+                    pairing.accept(frame); pairings[endpoint.physicalID] = pairing
+                    if before != pairing.progress { callback?(.pairing(pairing.progress)) }
+                    if pairing.progress.stage == "complete" || pairing.progress.stage == "failed" {
+                        pairings[endpoint.physicalID] = nil; pairingTokens[endpoint.physicalID] = nil
+                        pairingTimeouts.removeValue(forKey: endpoint.physicalID)?.cancel()
+                        refresh(force: true)
+                    }
+                }
                 guard var route = routes[id] else { return }
                 if let notice = ReceiverMessages.parseDeviceConnection(raw), endpoints[deviceID]?.isReceiver == true {
+                    let linkChanged = route.localLink != notice.linkEstablishedAssumed
                     let pairingChanged = route.wirelessProductID.map { $0 != notice.wirelessProductID } ?? false
                     let arrived = notice.linkEstablishedAssumed && (route.localLink != true || route.departing || pairingChanged)
                     route.wirelessProductID = notice.wirelessProductID
@@ -405,8 +622,8 @@ public actor DeviceEngine: DeviceSwitching {
                         route.metadataRead = false; route.state.featureIndex = 0
                         route.state.hostCount = 0; route.state.currentHost = nil; route.state.online = false
                         route.state.name = "\(endpoint.name) · 기기 \(route.index)"; route.state.kind = "기기"
-                        if selectedKeyboard == id { selectedKeyboard = nil }
-                        if selectedMouse == id { selectedMouse = nil }
+                        selectedKeyboards.remove(id)
+                        selectedMice.remove(id)
                         cancelDeferred(stage: "CAN_CFG")
                         manualGeneration &+= 1
                         await coordinator?.cancelAll(reason: "수신기 등록 기기 변경")
@@ -417,71 +634,104 @@ public actor DeviceEngine: DeviceSwitching {
                         nextGeneration &+= 1; route.generation = nextGeneration; route.departing = false
                         route.state.featureIndex = 0; route.nextRefreshAt = 0
                         route.early = EarlySignalGate<HidppFrame>()
-                        if id == selectedKeyboard { cancelDeferred(stage: "CAN_RET"); manualGeneration &+= 1; await coordinator?.cancelAll(reason: "키보드 복귀") }
+                        if selectedKeyboards.contains(id) { cancelDeferred(stage: "CAN_RET"); manualGeneration &+= 1; await coordinator?.cancelAll(reason: "키보드 복귀") }
                     } else if !notice.linkEstablishedAssumed { route.state.online = false }
                     routes[id] = route
                     if arrived || pairingChanged { refreshes[id]?.task.cancel(); refreshes[id] = nil }
-                    log.write("[\(id)] 수신기 링크 알림 flags=\(notice.flags) local=\(notice.linkEstablishedAssumed)")
+                    if arrived || pairingChanged || linkChanged {
+                        log.write("[\(id)] 수신기 기기 \(notice.linkEstablishedAssumed ? "연결" : "연결 해제"); 목적지 도착은 별도 확인 필요")
+                    }
+                    log.writeTrace("[\(id)] 수신기 링크 알림 flags=\(notice.flags) local=\(notice.linkEstablishedAssumed)")
                     publish(); refresh(force: true)
                 } else if let frame = HidppParser.parse(raw), frame.funcSwByte == 0 {
                     if route.state.featureIndex == 0 {
                         let evicted = route.early.hold(frame, generation: route.generation, nowMilliseconds: Self.nowMS)
                         routes[id] = route
-                        log.write("[\(id)] 초기 자발 신호 보관\(evicted ? "; 이전 신호 한 개 폐기" : "")")
+                        if evicted { log.write("[\(id)] 초기 신호 보관 한도 초과: 이전 신호 한 개 폐기") }
+                        log.writeTrace("[\(id)] 초기 자발 신호 보관")
                     } else { await handleDeparture(id, frame: frame) }
                 } else if let frame = HidppParser.parse(raw), frame.softwareID != softwareID {
-                    log.write("다른 앱 응답 softwareID=\(frame.softwareID)")
+                    log.writeTrace("다른 앱 응답 softwareID=\(frame.softwareID)")
                 }
             } catch { log.write("리포트 정규화 생략: \(error)") }
         }
     }
 
     private func handleDeparture(_ id: String, frame: HidppFrame) async {
+        guard !stopping else { log.write("따라가기 생략: 엔진 중지 중"); return }
         guard var route = routes[id] else { return }
         guard let target = ChangeHostFeature.parseHostChangeEvent(frame, featureIndex: route.state.featureIndex) else {
-            log.write("[\(id)] 전환 이외 자발 신호: feature/목적지 범위 불일치"); return
+            log.writeTrace("[\(id)] 전환 이외 자발 신호: feature/목적지 범위 불일치"); return
         }
         route.departing = true; route.departedAt = Self.nowMS; route.revision &+= 1; routes[id] = route
         log.write("[\(id)] 출발 신호: 채널 \(target + 1); 목적지 도착은 미확인")
         let run = beginRequest()
         activity(run: run, target: target, source: "F", role: "K1", stage: "KEY")
-        guard id == selectedKeyboard else { activity(run: run, target: target, source: "F", role: "D1", stage: "SKIP_KEY"); log.write("따라가기 생략: 선택한 키보드 아님"); return }
+        guard selectedKeyboards.contains(id) else { activity(run: run, target: target, source: "F", role: "D1", stage: "SKIP_KEY"); log.write("따라가기 생략: 선택한 키보드 아님"); return }
         guard follow else { activity(run: run, target: target, source: "F", role: "K1", stage: "SKIP_OFF"); log.write("따라가기 생략: 설정 꺼짐"); return }
-        guard manualSourceGeneration != route.generation || !manual.matches(generation: manualGeneration, target: target) else {
+        guard !manualSourceGenerations.contains(route.generation) || !manual.matches(generation: manualGeneration, target: target) else {
             activity(run: run, target: target, source: "F", role: "K1", stage: "SKIP_MAN"); log.write("따라가기 생략: 수동 요청 에코"); return
         }
-        guard let mouse = selectedMouse, let mouseRoute = routes[mouse] else { activity(run: run, target: target, source: "F", role: "M1", stage: "SKIP_SEL"); log.write("따라가기 생략: 마우스 미선택"); return }
+        let mice = selectedMice.sorted().filter { mouse in
+            guard let mouseRoute = routes[mouse] else {
+                log.write("[\(mouse)] 따라가기 생략: 선택한 마우스 경로 없음"); return false
+            }
+            let readiness = FollowPreparation.readiness(exists: true, transport: outputEndpoint(mouseRoute.endpoint) != nil,
+                localLink: mouseRoute.localLink, online: mouseRoute.state.online,
+                hosts: mouseRoute.state.hostCount, observedLocally: mouseRoute.observedLocally)
+            if readiness == .exclude { log.write("[\(mouse)] 따라가기 생략: 로컬 연결을 확인하지 못함"); return false }
+            return true
+        }
+        guard !mice.isEmpty else {
+            activity(run: run, target: target, source: "F", role: "M1", stage: "SKIP_SEL")
+            log.write("따라가기 생략: 전환할 선택 마우스 없음"); return
+        }
         callback?(.keyboardDeparture(target: target))
-        callback?(.notice(run: run, target: target, rows: [noticeRow(id, state: .complete), noticeRow(mouse, state: .switching)].compactMap { $0 }, connection: false))
+        callback?(.notice(run: run, target: target,
+            rows: [noticeRow(id, state: .complete)].compactMap { $0 } + mice.compactMap { noticeRow($0, state: .switching) }, connection: false))
         cancelDeferred(stage: "CAN_NEW")
         manualGeneration &+= 1
+        let generation = manualGeneration
         await coordinator?.cancelAll(reason: "새 키보드 목적지")
-        let readiness = FollowPreparation.readiness(exists: true, transport: outputEndpoint(mouseRoute.endpoint) != nil,
-                                                     localLink: mouseRoute.localLink, online: mouseRoute.state.online,
-                                                     hosts: mouseRoute.state.hostCount, observedLocally: mouseRoute.observedLocally)
-        guard readiness != .exclude else { activity(run: run, target: target, source: "F", role: "M1", stage: "SKIP_LINK"); log.write("따라가기 생략: 이 실행에서 마우스 로컬 링크를 확인하지 못함"); return }
-        pendingFollow = (run, target)
-        if readiness == .wait { activity(run: run, target: target, source: "F", role: "M1", stage: "WAIT") }
+        guard started, manualGeneration == generation else { log.write("따라가기 취소: 대기 중 새 요청"); return }
+        pendingFollow = (run, target, Set(mice))
         deferredFollow = Task { [weak self] in
-            let started = Self.nowMS
-            while !Task.isCancelled {
-                guard let self else { return }
-                if await self.followMouseIfReady(mouse, target: target, run: run) { return }
-                if FollowPreparation.expired(started: started, now: Self.nowMS) {
-                    await self.followExpired(mouse, run: run, target: target)
-                    return
+            await withTaskGroup(of: Void.self) { group in
+                for mouse in mice {
+                    group.addTask { [weak self] in
+                        let started = Self.nowMS
+                        while !Task.isCancelled {
+                            guard let self else { return }
+                            if await self.followMouseIfReady(mouse, target: target, run: run) { return }
+                            if FollowPreparation.expired(started: started, now: Self.nowMS) {
+                                await self.followExpired(mouse, run: run, target: target); return
+                            }
+                            do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+                        }
+                    }
                 }
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
         }
     }
 
     private func followMouseIfReady(_ id: String, target: Int, run: Int) async -> Bool {
-        guard follow, selectedMouse == id, let route = routes[id] else { return true }
+        guard follow, selectedMice.contains(id), pendingFollow?.run == run, let route = routes[id] else { return true }
         guard route.state.online, route.localLink != false, route.state.hostCount > 0 else { return false }
         await switchOne(id, target: target, run: run, source: "F", reason: "키보드 출발")
-        if pendingFollow?.run == run { pendingFollow = nil }
+        finishPendingMouse(id, run: run)
         return true
+    }
+
+    private func finishPendingMouse(_ id: String, run: Int) {
+        guard pendingFollow?.run == run else { return }
+        pendingFollow?.devices.remove(id)
+        if pendingFollow?.devices.isEmpty == true { pendingFollow = nil }
+    }
+
+    private func deviceRole(_ id: String) -> String {
+        if let index = selectedKeyboards.sorted().firstIndex(of: id) { return "K\(index + 1)" }
+        if let index = selectedMice.sorted().firstIndex(of: id) { return "M\(index + 1)" }
+        return "D1"
     }
 
     private func noticeRow(_ id: String, state: NoticeState) -> NoticeRow? {
@@ -492,12 +742,12 @@ public actor DeviceEngine: DeviceSwitching {
     private func switchManualWhenReady(_ id: String, connection: UInt64, generation: UInt64,
                                        target: Int, run: Int, source: String) async {
         let startedAt = Self.nowMS
-        let role = id == selectedKeyboard ? "K1" : "M1"
+        let role = deviceRole(id)
         var waiting = false
         defer { if manualPreparations[id] == generation { manualPreparations[id] = nil } }
         while true {
             guard !Task.isCancelled, started, manualGeneration == generation,
-                  id == selectedKeyboard || id == selectedMouse,
+                  selectedKeyboards.contains(id) || selectedMice.contains(id),
                   let route = routes[id], route.generation == connection,
                   outputEndpoint(route.endpoint) != nil, route.localLink != false, !route.departing else {
                 activity(run: run, target: target, source: source, role: role, stage: "CAN_PREP")
@@ -534,16 +784,16 @@ public actor DeviceEngine: DeviceSwitching {
 
     private func switchOne(_ id: String, target: Int, run: Int, source: String, reason: String) async {
         guard let coordinator, let device = routes[id]?.state else { log.write("전환 생략: 기기 경로 사라짐"); return }
-        let role = device.kind == "키보드" ? "K1" : device.kind == "마우스" ? "M1" : "D1"
+        let role = deviceRole(id)
         let requestStart = requestStarts[run] ?? Self.nowMS
         _ = await coordinator.switchHost(id, target: target, reason: reason) { [weak self, log] progress in
             log.writeCode(SwitchCode.format(request: run, source: source, target: target, role: role, progress: progress,
                                             requestElapsedMS: Self.nowMS - requestStart))
             let state: NoticeState
             switch progress.outcome {
-            case .alreadyCurrent, .targetReported, .localLinkClosed: state = .complete
+            case .alreadyCurrent, .targetReported: state = .complete
             case .failed, .stillOnSource: state = .failed
-            case .cancelled, .unverified: state = .unconfirmed
+            case .cancelled, .unverified, .localLinkClosed: state = .unconfirmed
             case nil: state = .switching
             }
             Task { await self?.emitProgress(run: run, target: target, device: device, state: state) }
@@ -556,7 +806,7 @@ public actor DeviceEngine: DeviceSwitching {
 
     private func beginRequest() -> Int {
         noticeRun += 1; requestStarts[noticeRun] = Self.nowMS
-        if requestStarts.count > 200 { requestStarts[noticeRun - 200] = nil }
+        if requestStarts.count > 200 { requestStarts[noticeRun - 200] = nil; manualRunGenerations[noticeRun - 200] = nil }
         return noticeRun
     }
     private func activity(run: Int, target: Int, source: String, role: String, stage: String) {
@@ -570,10 +820,18 @@ public actor DeviceEngine: DeviceSwitching {
         guard pendingFollow?.run == run else { return }
         activity(run: run, target: target, source: "F", role: "M1", stage: "CAN_EXP")
         if let row = noticeRow(id, state: .failed) { callback?(.notice(run: run, target: target, rows: [row], connection: false)) }
-        pendingFollow = nil
+        finishPendingMouse(id, run: run)
         log.write("따라가기 대기 만료: 10초 동안 마우스 준비 안 됨")
     }
 
-    private func publish() { callback?(.devices(currentDevices())) }
+    private func publish() {
+        callback?(.devices(currentDevices()))
+        let receivers = Dictionary(grouping: endpoints.values.filter { $0.isReceiver && $0.isOpen }, by: \.physicalID)
+            .compactMap { id, group -> ReceiverState? in
+                guard let item = group.first, item.productID == 0xC548 || item.productID == 0xC52B else { return nil }
+                return ReceiverState(id: id, name: item.name, bolt: item.productID == 0xC548)
+            }.sorted { $0.id < $1.id }
+        callback?(.receivers(receivers))
+    }
     private static var nowMS: Int64 { Int64(ProcessInfo.processInfo.systemUptime * 1000) }
 }

@@ -27,17 +27,17 @@ struct EasySwitchMain {
 
     private static func runProbe(_ args: [String]) async -> Int32 {
         do {
-            let log = try FileLog()
+            let log = try FileLog(traceFrames: args.contains("--trace-frames"))
             let seconds = args.firstIndex(of: "--seconds").flatMap { index in
                 index + 1 < args.count ? Double(args[index + 1]) : nil
             } ?? 6
             guard seconds.isFinite, seconds > 0, seconds <= 300 else {
                 FileHandle.standardError.write(Data("--seconds 범위: 0 초과 300 이하\n".utf8)); return 2
             }
-            print("EasySwitch macOS 읽기 전용 probe")
+            print("EasySwitch macOS 읽기 전용 probe | traceFrames=\(log.traceFrames)")
             print("Input Monitoring: \(HIDMonitor.inputMonitoringAccess().rawValue)")
             print("로그: \(log.fileURL.path)")
-            let driver = HIDMonitor()
+            let driver = HIDMonitor(traceFrames: log.traceFrames)
             let engine = DeviceEngine(driver: driver, log: log)
             try await engine.start { _ in }
             try await Task.sleep(for: .seconds(seconds))
@@ -54,6 +54,7 @@ struct EasySwitchMain {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let arguments: [String]
+    private let splash = StartupSplash()
     private var model: AppModel?
     private var controller: AppWindowController?
     private var statusItem: NSStatusItem?
@@ -81,10 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let log = try FileLog()
             let model = AppModel(log: log)
             self.model = model
+            if !background { splash.show() }
+            model.onStarted = { [weak self] in self?.splash.close() }
             model.onShowMainWindow = { [weak self] in self?.showMainWindow() }
             model.onLanguageChanged = { [weak self] in self?.buildMenu() }
-            controller = AppWindowController(model: model)
-            controller?.onClose = { NSApp.setActivationPolicy(.accessory) }
             buildMenu()
             presentAtLaunch()
             log.write(background ? "백그라운드 시작: 메뉴 막대 상주, 메인 창 표시 안 함" : "사용자 실행: 메뉴 막대 상주, 메인 창 표시 안 함")
@@ -158,7 +159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Use the settings binding so enabling also updates the UI and saved preference.
         // Repeated clicks keep the feature enabled rather than toggling it off.
         model?.floatingEnabled = true
-        model?.log.write("메뉴 막대 클릭: 플로팅 버튼 표시 요청")
     }
 
     private func openStatusMenu() {
@@ -178,6 +178,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func presentAtLaunch() { NSApp.setActivationPolicy(.accessory) }
 
     @objc private func showMainWindow() {
+        guard let model else { return }
+        if controller == nil {
+            let created = AppWindowController(model: model, storesFrame: !arguments.contains("--render"), viewState: model.mainWindowViewState)
+            created.onClose = { [weak self, weak created] in
+                guard let self, let created, self.controller === created else { return }
+                if let window = created.window, !window.frameAutosaveName.isEmpty {
+                    window.saveFrame(usingName: window.frameAutosaveName)
+                    window.setFrameAutosaveName("")
+                }
+                // Drop ownership now, so a rapid reopen creates an independent window.
+                self.controller = nil
+                self.model?.setMainWindowVisible(false)
+                NSApp.setActivationPolicy(.accessory)
+                // AppKit is still delivering windowWillClose. Detach the view graph after
+                // that callback returns, retaining only this closing controller until then.
+                DispatchQueue.main.async {
+                    created.window?.delegate = nil
+                    created.window?.contentView = nil
+                    created.window = nil
+                }
+            }
+            controller = created
+        }
+        model.setMainWindowVisible(true)
         NSApp.setActivationPolicy(.regular)
         controller?.showWindow(nil); controller?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -196,6 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     @objc private func switchFromMenu(_ sender: NSMenuItem) { model?.switchChannel(sender.tag, source: "T") }
     @objc private func openLogs() {
+        model?.mainWindowViewState.page = .logs
+        model?.mainWindowViewState.showLog = true
         showMainWindow()
         model?.pageRequests.send(.logs)
     }
@@ -205,7 +231,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        model?.log.write("사용자가 앱 다시 열기 요청: 메인 창 표시")
         showMainWindow()
         return false
     }
@@ -214,7 +239,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if shouldKeepRunning(afterQuitEvent: NSAppleEventManager.shared().currentAppleEvent) {
             controller?.window?.close()
             NSApp.setActivationPolicy(.accessory)
-            model.log.write("일반 종료 요청: 메인 창·Dock 숨김, 메뉴 막대·기기 감시 유지")
             return .terminateCancel
         }
         terminating = true
@@ -234,6 +258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func renderFixtures(to directory: URL) async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let model = AppModel(log: try FileLog(directory: directory.appendingPathComponent("fixture-logs")), fixture: true)
+        let selectionChecks = AppModel.verifySelectionMigration(log: model.log)
+        try JSONSerialization.data(withJSONObject: selectionChecks, options: [.prettyPrinted, .sortedKeys])
+            .write(to: directory.appendingPathComponent("selection-report.json"))
+        guard selectionChecks.values.allSatisfy({ $0 }) else { throw CocoaError(.validationMultipleErrors) }
         model.devices = [
             DeviceState(id: "fixture-keyboard", name: "MX KEYS S", connection: "Bolt", kind: "키보드", online: true, currentHost: 0, hostCount: 3, featureIndex: 9),
             DeviceState(id: "fixture-mouse", name: "MX Master 3S", connection: "Bluetooth", kind: "마우스", online: true, currentHost: 0, hostCount: 3, featureIndex: 10)
@@ -248,6 +276,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             try window.capture(to: directory.appendingPathComponent("\(page.rawValue).png"))
             window.window?.orderOut(nil)
         }
+        let referenceDevices = model.devices
+        model.devices += [DeviceState(id: "fixture-mouse-2", name: "MX Master 4", connection: "Bolt", kind: "마우스", online: true, currentHost: 0, hostCount: 3, featureIndex: 10),
+                          DeviceState(id: "fixture-keyboard-2", name: "MX MCHNCL", connection: "Bluetooth", kind: "키보드", online: true, currentHost: 0, hostCount: 3, featureIndex: 9)]
+        model.selectedMouseIDs.insert("fixture-mouse-2"); model.selectedKeyboardIDs.insert("fixture-keyboard-2")
+        let multiple = AppWindowController(model: model, storesFrame: false)
+        multiple.window?.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(200))
+        try multiple.capture(to: directory.appendingPathComponent("home-multiple-devices.png"))
+        multiple.window?.orderOut(nil)
+        model.devices = referenceDevices; model.selectedKeyboardID = "fixture-keyboard"; model.selectedMouseID = "fixture-mouse"
         let empty = AppModel(log: model.log, fixture: true)
         let emptyWindow = AppWindowController(model: empty, storesFrame: false)
         emptyWindow.window?.orderFront(nil)
@@ -273,7 +311,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
-        try NoticePresenter.renderFixtures(to: directory)
+        for language in ["ko", "en"] {
+            model.setLanguage(language)
+            for enabled in [false, true] {
+                model.toastEnabled = enabled; model.toastSize = 125; model.toastTransparency = 30
+                for width in [CGFloat(860), 1140] {
+                    let settings = AppWindowController(model: model, initialPage: .settings, storesFrame: false, toastExpanded: true)
+                    settings.window?.orderFront(nil)
+                    try await Task.sleep(for: .milliseconds(220))
+                    try settings.capture(to: directory.appendingPathComponent("settings-toast-\(language)-\(enabled ? "on" : "off")-\(Int(width)).png"),
+                                         size: .init(width: width, height: 720))
+                    settings.window?.orderOut(nil)
+                }
+            }
+        }
+        try await NoticePresenter.renderFixtures(to: directory)
         try FloatingController.renderFixture(to: directory.appendingPathComponent("floating"))
         let statusProbe = AppDelegate(arguments: [])
         statusProbe.model = empty
@@ -293,30 +345,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                           targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
                                                           transactionID: AETransactionID(kAnyTransactionID))
         loginEvent.setParam(NSAppleEventDescriptor(enumCode: keyAELaunchedAsLogInItem), forKeyword: keyAEPropData)
-        let backgroundProbe = AppDelegate(arguments: [])
+        let backgroundProbe = AppDelegate(arguments: ["--render"])
         backgroundProbe.model = empty
-        backgroundProbe.controller = AppWindowController(model: empty, storesFrame: false)
-        backgroundProbe.controller?.onClose = { NSApp.setActivationPolicy(.accessory) }
         backgroundProbe.buildMenu()
         let priorPolicy = NSApp.activationPolicy()
         backgroundProbe.presentAtLaunch()
-        let hiddenAtLaunch = backgroundProbe.controller?.window?.isVisible == false && NSApp.activationPolicy() == .accessory
+        let hiddenAtLaunch = backgroundProbe.controller == nil && NSApp.activationPolicy() == .accessory
         empty.floatingEnabled = false
         backgroundProbe.handleStatusItemClick()
-        let clickShowsOnlyFloating = empty.floatingEnabled && backgroundProbe.controller?.window?.isVisible == false
+        let clickShowsOnlyFloating = empty.floatingEnabled && backgroundProbe.controller == nil
         backgroundProbe.showMainWindow()
         let explicitOpenShowsWindow = backgroundProbe.controller?.window?.isVisible == true && NSApp.activationPolicy() == .regular
+        let firstControllerReleased = { [weak value = backgroundProbe.controller] in value == nil }
+        let firstViewReleased = { [weak value = backgroundProbe.controller?.window?.contentView] in value == nil }
         backgroundProbe.controller?.window?.performClose(nil)
-        let closeKeepsStatusItem = backgroundProbe.controller?.window?.isVisible == false
+        let closeKeepsStatusItem = backgroundProbe.controller == nil
             && NSApp.activationPolicy() == .accessory && backgroundProbe.statusItem?.button != nil
             && !backgroundProbe.applicationShouldTerminateAfterLastWindowClosed(NSApp)
+        try await Task.sleep(for: .milliseconds(200))
+        let closedObjectsReleased = firstControllerReleased() && firstViewReleased()
         let handlesReopen = !backgroundProbe.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
             && backgroundProbe.controller?.window?.isVisible == true && NSApp.activationPolicy() == .regular
         backgroundProbe.showMainWindow()
         let reopensAfterClose = backgroundProbe.controller?.window?.isVisible == true && NSApp.activationPolicy() == .regular
         let quitReply = backgroundProbe.applicationShouldTerminate(NSApp)
         let ordinaryQuitKeepsResident = quitReply == .terminateCancel && !backgroundProbe.terminating
-            && backgroundProbe.controller?.window?.isVisible == false
+            && backgroundProbe.controller == nil
             && NSApp.activationPolicy() == .accessory && backgroundProbe.statusItem?.button != nil
         backgroundProbe.showMainWindow()
         let reopensAfterQuit = backgroundProbe.controller?.window?.isVisible == true
@@ -330,10 +384,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         backgroundProbe.fullQuitRequested = true
         let explicitQuitStopsResident = !backgroundProbe.shouldKeepRunning(afterQuitEvent: nil)
         backgroundProbe.fullQuitRequested = false
-        backgroundProbe.controller?.window?.orderOut(nil)
+        backgroundProbe.controller?.window?.close()
         if let item = backgroundProbe.statusItem { NSStatusBar.system.removeStatusItem(item) }
         NSApp.setActivationPolicy(priorPolicy)
         let startupChecks = ["launchStartsWithoutMainWindow": hiddenAtLaunch,
+                             "closedMainWindowControllerAndViewAreReleased": closedObjectsReleased,
                              "loginEventIsRecognized": LoginStartup.startsInBackground(arguments: [], event: loginEvent),
                              "backgroundClickEnablesSettingWithoutMainWindow": clickShowsOnlyFloating,
                              "explicitAppOpenShowsMainWindow": explicitOpenShowsWindow,

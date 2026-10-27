@@ -4,6 +4,20 @@ import Testing
 
 @Suite("Complete local logs and optional folder copies")
 struct FileLogTests {
+    @Test(arguments: [false, true]) func frameDiagnosticsAreOptInAndLazy(_ enabled: Bool) async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = try FileLog(directory: folder, traceFrames: enabled)
+        var formatted = 0
+        func frame() -> String { formatted += 1; return "TX fixture-frame" }
+        log.writeTrace(frame())
+        log.write("기기 연결 해제: fixture")
+        await log.flush()
+        #expect(formatted == (enabled ? 1 : 0))
+        let lines = await log.recentLines()
+        #expect(lines.contains { $0.contains("TX fixture-frame") } == enabled)
+        #expect(lines.contains { $0.contains("기기 연결 해제") })
+    }
     private func directory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("easyswitch-file-tests-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -49,6 +63,38 @@ struct FileLogTests {
         await log.flush()
         #expect(!FileManager.default.fileExists(atPath: old.appendingPathComponent(log.fileURL.lastPathComponent).path))
         #expect(try String(contentsOf: newest.appendingPathComponent(log.fileURL.lastPathComponent), encoding: .utf8).contains("newest only"))
+    }
+    @Test func atomicCopyReplacesExportAndKeepsLiveFileWritable() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = try FileLog(directory: folder)
+        let destination = folder.appendingPathComponent("export.txt")
+        try Data("previous export".utf8).write(to: destination)
+        log.write("before copy")
+        try await log.export(to: destination)
+        log.write("after copy")
+        try await log.export(to: destination)
+        let contents = try String(contentsOf: destination, encoding: .utf8)
+        #expect(contents.contains("before copy") && contents.contains("after copy"))
+        #expect(!contents.contains("previous export"))
+        await #expect(throws: CocoaError.self) { try await log.export(to: log.fileURL) }
+        log.write("after rejected self copy")
+        await log.flush()
+        #expect(try String(contentsOf: log.fileURL, encoding: .utf8).contains("after rejected self copy"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).allSatisfy { !$0.hasPrefix(".easyswitch-log-") })
+    }
+    @Test func failedAtomicReplacementKeepsDestinationAndRemovesStagingFile() async throws {
+        let folder = try directory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = try FileLog(directory: folder)
+        let destination = folder.appendingPathComponent("existing-folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let sentinel = destination.appendingPathComponent("keep.txt")
+        try Data("keep".utf8).write(to: sentinel)
+        log.write("local continues")
+        await #expect(throws: POSIXError.self) { try await log.export(to: destination) }
+        #expect(try String(contentsOf: sentinel, encoding: .utf8) == "keep")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).allSatisfy { !$0.hasPrefix(".easyswitch-log-") })
     }
     @Test func localDepartureCodeKeepsDestinationVerdictUnconfirmed() {
         let progress = SwitchProgress(stage: "END", attempt: 2, writes: 1, sends: 2, elapsedMS: 1450,

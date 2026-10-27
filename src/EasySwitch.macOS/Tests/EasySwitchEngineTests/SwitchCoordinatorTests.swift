@@ -4,7 +4,7 @@ import EasySwitchCore
 @testable import EasySwitchEngine
 
 private actor SwitchingDevice: DeviceSwitching {
-    enum Behavior: Sendable { case source, target, targetAfterFourthWrite, noReply, sourceThenNoReply, leaveLocal, newGeneration }
+    enum Behavior: Sendable { case source, target, targetAfterFourthWrite, noReply, sourceThenNoReply, leaveLocal, newGeneration, writeTimeout }
     private var state: SwitchSnapshot?
     private let behavior: Behavior
     private var blockFirst: Bool
@@ -31,6 +31,7 @@ private actor SwitchingDevice: DeviceSwitching {
         }
         active -= 1
         switch behavior {
+        case .writeTimeout: throw EngineError.timeout
         case .leaveLocal: state?.localLink = false; state?.online = false
         case .newGeneration: state?.generation += 1
         case .target: state?.currentHost = target
@@ -68,6 +69,35 @@ private func switchEventually(_ condition: @escaping @Sendable () async -> Bool)
 
 @Suite("Switch verification and latest destination")
 struct SwitchCoordinatorTests {
+    @Test func writeTimeoutAloneDoesNotInvalidateTheLocalPath() async {
+        let devices = SwitchingDevice(behavior: .writeTimeout)
+        let result = await coordinator(devices).switchHost("mouse", target: 1, reason: "timeout")
+        #expect(result == .unverified)
+        #expect(await devices.writeTargets.count == 3)
+        #expect(await devices.switchSnapshot("mouse")?.localLink == true)
+        #expect(await devices.switchSnapshot("mouse")?.generation == 1)
+        #expect(await devices.readCount == 0)
+    }
+    @Test func evidenceLabelsNeverClaimRemoteArrival() {
+        #expect(SwitchOutcome.localLinkClosed.evidence == "local_path_unavailable")
+        #expect(SwitchOutcome.targetReported.evidence == "device_target_channel_report")
+        #expect(SwitchOutcome.cancelled.evidence == "request_cancelled_or_generation_changed")
+    }
+    @Test(arguments: [SwitchingDevice.Behavior.leaveLocal, .target, .newGeneration, .writeTimeout])
+    fileprivate func basicLogsDistinguishTheEvidence(_ behavior: SwitchingDevice.Behavior) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("switch-evidence-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = try FileLog(directory: directory)
+        let devices = SwitchingDevice(behavior: behavior)
+        let engine = SwitchCoordinator(devices: devices, verificationMS: 1, retryMS: 1, budgetMS: 500, maxAttempts: 2,
+                                       log: { log.write($0) })
+        let outcome = await engine.switchHost("fixture", target: 1, reason: "test")
+        let lines = await log.recentLines()
+        #expect(lines.contains { $0.contains("SWITCH_END") && $0.contains("evidence=\(outcome.evidence)") && $0.contains("remoteArrival=unobserved") })
+        #expect(lines.contains { $0.contains("evidence=os_write_completed") } == (behavior != .writeTimeout))
+        if behavior == .newGeneration { #expect(lines.contains { $0.contains("reason=GEN") }) }
+        #expect(!lines.contains { $0.contains(" TX ") || $0.contains(" RX ") })
+    }
     @Test func currentHostIsSkippedWithoutWriting() async {
         let devices = SwitchingDevice(current: 1)
         let result = await coordinator(devices).switchHost("mouse", target: 1, reason: "test")

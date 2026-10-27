@@ -59,6 +59,20 @@ private func routerEventually(_ condition: @escaping @Sendable () async -> Bool)
 
 @Suite("HID++ request ownership and write serialization")
 struct RequestRouterTests {
+    @Test(arguments: [false, true]) func transmissionTraceRequiresExplicitOptIn(_ enabled: Bool) async throws {
+        let log = try FileLog(directory: FileManager.default.temporaryDirectory.appendingPathComponent("easyswitch-trace-test-\(UUID())"), traceFrames: enabled)
+        let driver = RouterDriver()
+        let router = RequestRouter(driver: driver, log: log)
+        let frame = try RootFeature.getFeature(0x1814, deviceIndex: 2, softwareID: 9)
+        let pending = Task { try await router.request(deviceID: "fixture", frame: frame) }
+        #expect(await routerEventually { await driver.count == 1 })
+        let response = try HidppFrame.build(featureIndex: 0, functionID: 0, deviceIndex: 2, softwareID: 9, parameters: [9])
+        await router.receive(deviceID: "fixture", bytes: response.bytes)
+        _ = try await pending.value
+        try await router.send(deviceID: "fixture", frame: frame)
+        await log.flush()
+        #expect(await log.recentLines().filter { $0.contains(" TX ") }.count == (enabled ? 2 : 0))
+    }
     @Test func correlatesPhysicalDeviceSlotAndSoftwareAndAcceptsLongResponse() async throws {
         let driver = RouterDriver()
         let router = RequestRouter(driver: driver, log: try routerLog())

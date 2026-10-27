@@ -3,77 +3,124 @@ import EasySwitchEngine
 
 @MainActor
 final class NoticePresenter {
+    private struct Content {
+        let run: Int, target: Int
+        let english: Bool
+        let reservedNames: [String]
+    }
     @MainActor private final class Slot {
         let panel = NoticePanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         let view = NoticeView()
         var run = -1
-        init(log: FileLog?) {
+        init() {
             panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
             panel.level = .statusBar; panel.ignoresMouseEvents = true
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
             panel.animationBehavior = .none; panel.isReleasedWhenClosed = false
             panel.contentView = view
-            view.log = log
         }
     }
     private var switching: [String: Slot] = [:], connections: [String: Slot] = [:]
     private var rows: [NoticeRow] = [], connectionRows: [NoticeRow] = []
     private var activeRun = -1
+    private var suppressedRun = -1
+    private var preferences: ToastPreferences
+    private var activeContent: Content?, connectionContent: Content?
     private var hideSwitch: Task<Void, Never>?, hideConnection: Task<Void, Never>?
-    private let log: FileLog?
 
-    init(log: FileLog? = nil) { self.log = log }
+    init(preferences: ToastPreferences = ToastPreferences()) {
+        self.preferences = preferences
+    }
+
+    func configure(_ preferences: ToastPreferences) {
+        guard preferences != self.preferences else { return }
+        let resized = preferences.size != self.preferences.size
+        self.preferences = preferences
+        if !preferences.enabled {
+            suppressedRun = max(suppressedRun, activeRun)
+            hideSwitch?.cancel(); hideConnection?.cancel()
+            hideSwitch = nil; hideConnection = nil
+            activeContent = nil; connectionContent = nil; rows = []; connectionRows = []
+            releasePanels()
+            return
+        }
+        if let content = activeContent { present(content, connection: false, relayout: resized) }
+        if let content = connectionContent { present(content, connection: true, relayout: resized) }
+    }
 
     func show(run: Int, target: Int, rows incoming: [NoticeRow], connection: Bool, english: Bool, reservedNames: [String]) {
+        guard preferences.enabled else {
+            if !connection { suppressedRun = max(suppressedRun, run) }
+            return
+        }
+        guard connection || run > suppressedRun else {
+            return
+        }
         if connection { connectionRows = merge(connectionRows, incoming) }
         else {
             guard run >= activeRun else { return }
             if run > activeRun { rows = []; activeRun = run }
             rows = merge(rows, incoming)
         }
+        let content = Content(run: run, target: target, english: english, reservedNames: reservedNames)
+        if connection { connectionContent = content }
+        else { activeContent = content }
+        present(content, connection: connection)
+        if connection {
+            hideConnection?.cancel(); hideConnection = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                self?.connectionContent = nil; self?.connectionRows = []
+                for slot in self?.connections.values ?? [:].values { slot.panel.orderOut(nil) }
+            }
+        } else {
+            hideSwitch?.cancel(); hideSwitch = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                self?.activeContent = nil
+                for slot in self?.switching.values ?? [:].values { slot.panel.orderOut(nil) }
+            }
+        }
+    }
+
+    private func present(_ content: Content, connection: Bool, relayout: Bool = false) {
+        let run = content.run, scale = preferences.scale
         let display = connection ? connectionRows : rows
         var slots = connection ? connections : switching
         let screenKeys = Set(NSScreen.screens.map { String(describing: $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? 0) })
         for removed in slots.keys where !screenKeys.contains(removed) { slots[removed]?.panel.close(); slots[removed] = nil }
         for screen in NSScreen.screens {
             let key = String(describing: screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] ?? 0)
-            let slot = slots[key] ?? Slot(log: log); slots[key] = slot
+            let slot = slots[key] ?? Slot(); slots[key] = slot
             slot.view.run = run
-            let fresh = slot.run != run || slot.view.english != english || slot.view.connection != connection || !slot.panel.isVisible
+            let fresh = relayout || slot.run != run || slot.view.english != content.english || slot.view.connection != connection || !slot.panel.isVisible
             let oldSize = slot.panel.frame.size
-            let size = slot.view.update(target: target, rows: display, connection: connection, english: english,
-                                        reservedNames: reservedNames, maximumWidth: screen.visibleFrame.width - 48, fresh: fresh)
+            let logicalSize = slot.view.update(target: content.target, rows: display, connection: connection, english: content.english,
+                                               reservedNames: content.reservedNames, maximumWidth: (screen.visibleFrame.width - 48) / scale, fresh: fresh)
+            let size = NSSize(width: logicalSize.width * scale, height: logicalSize.height * scale)
             if fresh || oldSize != size || !slot.panel.isVisible {
                 let area = screen.visibleFrame
                 let x = fresh ? area.midX - size.width / 2 : slot.panel.frame.minX
                 let y: CGFloat
-                if connection, let below = switching[key], below.panel.isVisible { y = below.panel.frame.maxY + 12 }
+                if connection, let below = switching[key], below.panel.isVisible { y = below.panel.frame.maxY + 12 * scale }
                 else if fresh || !slot.panel.isVisible { y = area.minY + 64 }
                 else { y = slot.panel.frame.maxY - size.height }
                 slot.panel.setFrame(.init(x: x, y: y, width: size.width, height: size.height), display: false)
             }
+            slot.view.frame = .init(origin: .zero, size: size)
+            slot.view.setBoundsSize(logicalSize)
+            slot.panel.alphaValue = preferences.opacity
             slot.run = run; slot.view.needsDisplay = true; slot.panel.orderFrontRegardless()
             // Present the initial state before a fast HID switch can finish on another thread.
             slot.panel.displayIfNeeded(); slot.view.displayIfNeeded()
-            if fresh { log?.write("TOAST_SHOW run=\(run) connection=\(connection) visible=\(slot.panel.isVisible) screen=\(key)") }
         }
-        if connection { connections = slots; hideConnection?.cancel(); hideConnection = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            self?.connectionRows = []; for slot in self?.connections.values ?? [:].values { slot.panel.orderOut(nil) }
-            self?.log?.write("TOAST_HIDE run=\(run) connection=true")
-        } }
+        if connection { connections = slots }
         else {
             switching = slots
             for (key, connectionSlot) in connections where connectionSlot.panel.isVisible {
                 if let below = switching[key] {
-                    connectionSlot.panel.setFrameOrigin(.init(x: connectionSlot.panel.frame.minX, y: below.panel.frame.maxY + 12))
+                    connectionSlot.panel.setFrameOrigin(.init(x: connectionSlot.panel.frame.minX, y: below.panel.frame.maxY + 12 * scale))
                 }
             }
-            hideSwitch?.cancel(); hideSwitch = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            for slot in self?.switching.values ?? [:].values { slot.panel.orderOut(nil) }
-            self?.log?.write("TOAST_HIDE run=\(run) connection=false")
-        } }
+        }
     }
 
     private func merge(_ previous: [NoticeRow], _ incoming: [NoticeRow]) -> [NoticeRow] {
@@ -87,11 +134,19 @@ final class NoticePresenter {
     }
     func stop() {
         hideSwitch?.cancel(); hideConnection?.cancel()
-        for slot in Array(switching.values) + Array(connections.values) { slot.panel.close() }
-        switching = [:]; connections = [:]
+        hideSwitch = nil; hideConnection = nil
+        activeContent = nil; connectionContent = nil; rows = []; connectionRows = []
+        releasePanels()
     }
 
-    static func renderFixtures(to directory: URL) throws {
+    private func releasePanels() {
+        for slot in Array(switching.values) + Array(connections.values) {
+            slot.panel.contentView = nil; slot.panel.close()
+        }
+        switching.removeAll(); connections.removeAll()
+    }
+
+    static func renderFixtures(to directory: URL) async throws {
         let cases: [(String, Bool, Bool, [NoticeRow])] = [
             ("toast-command-ko", false, false, [NoticeRow(id: "k", name: "MX MCHNCL", kind: "키보드", state: .complete), NoticeRow(id: "m", name: "MX Master 4", kind: "마우스", state: .switching)]),
             ("toast-command-en", true, false, [NoticeRow(id: "k", name: "MX MCHNCL", kind: "키보드", state: .complete), NoticeRow(id: "m", name: "MX Master 4", kind: "마우스", state: .unconfirmed)]),
@@ -108,14 +163,18 @@ final class NoticePresenter {
         ]
         for (name, english, connection, rows) in cases {
             for maximumWidth in [CGFloat(600), 300] {
-                let view = NoticeView()
-                let size = view.update(target: 1, rows: rows, connection: connection, english: english,
-                                       reservedNames: rows.map(\.name), maximumWidth: maximumWidth, fresh: true)
-                view.frame = .init(origin: .zero, size: size)
-                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
-                view.cacheDisplay(in: view.bounds, to: bitmap)
-                let suffix = maximumWidth == 600 ? "" : "-constrained"
-                try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(name + suffix + ".png"))
+                for percent in [50, 100, 200] {
+                    let scale = CGFloat(percent) / 100
+                    let view = NoticeView()
+                    let size = view.update(target: 1, rows: rows, connection: connection, english: english,
+                                           reservedNames: rows.map(\.name), maximumWidth: maximumWidth / scale, fresh: true)
+                    view.frame = .init(x: 0, y: 0, width: size.width * scale, height: size.height * scale)
+                    view.setBoundsSize(size)
+                    guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+                    view.cacheDisplay(in: view.bounds, to: bitmap)
+                    let suffix = (maximumWidth == 600 ? "" : "-constrained") + (percent == 100 ? "" : "-\(percent)")
+                    try bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(name + suffix + ".png"))
+                }
             }
         }
         let presenter = NoticePresenter()
@@ -146,10 +205,85 @@ final class NoticePresenter {
         presenter.show(run: 11, target: 1, rows: complete, connection: false, english: false,
                        reservedNames: [keyboard.name, mouse.name])
         let fastCompletionDrawn = presenter.switching.values.allSatisfy { $0.panel.isVisible && $0.view.renderedStates == [.complete, .complete] }
-        let checks = ["statusChangesKeepFrame": statusStable, "lateRowGrowsBelowFixedHeader": addedBelow,
+        var checks = ["statusChangesKeepFrame": statusStable, "lateRowGrowsBelowFixedHeader": addedBelow,
                       "sameRequestRetainsSurface": retained, "connectionNoticeAboveSwitch": stacked,
                       "fastSwitchStartDrawsBeforeCompletion": fastStartDrawn, "fastSwitchCompletionDrawsWhileVisible": fastCompletionDrawn]
+
+        let normal = presenter.switching.mapValues { $0.panel.frame }
+        presenter.configure(ToastPreferences(size: 50))
+        checks["liveHalfSizeKeepsBottomAnchor"] = !normal.isEmpty && presenter.switching.allSatisfy {
+            guard let before = normal[$0.key] else { return false }
+            let after = $0.value.panel.frame
+            return abs(after.width - before.width / 2) < 1 && abs(after.height - before.height / 2) < 1 && abs(after.minY - before.minY) < 1
+        }
+        presenter.configure(ToastPreferences(size: 200))
+        checks["liveDoubleSizeKeepsBottomAnchor"] = presenter.switching.allSatisfy {
+            guard let before = normal[$0.key] else { return false }
+            let after = $0.value.panel.frame
+            return abs(after.width - before.width * 2) < 1 && abs(after.height - before.height * 2) < 1 && abs(after.minY - before.minY) < 1
+        }
+        checks["scaledConnectionStacking"] = presenter.connections.allSatisfy {
+            guard let below = presenter.switching[$0.key] else { return false }
+            return abs($0.value.panel.frame.minY - below.panel.frame.maxY - 24) < 0.5
+        }
+        let largeFrames = presenter.switching.mapValues { $0.panel.frame }
+        presenter.configure(ToastPreferences(size: 200, transparency: 75))
+        checks["liveOpacityKeepsFramesAndSurfaces"] = presenter.switching.allSatisfy {
+            $0.value.panel.alphaValue == 0.25 && $0.value.panel.frame == largeFrames[$0.key] && initial[$0.key]?.1 == ObjectIdentifier($0.value.view)
+        } && presenter.connections.values.allSatisfy { $0.panel.alphaValue == 0.25 }
+        presenter.configure(ToastPreferences(transparency: 100))
+        checks["fullyTransparentToasts"] = (Array(presenter.switching.values) + Array(presenter.connections.values)).allSatisfy { $0.panel.alphaValue == 0 }
+        presenter.configure(ToastPreferences(transparency: 30))
+        checks["opacityCanBeRestored"] = presenter.switching.values.allSatisfy { $0.panel.isVisible && abs($0.panel.alphaValue - 0.7) < 0.00001 }
+        presenter.configure(ToastPreferences(enabled: false))
+        checks["disableHidesBothKinds"] = (Array(presenter.switching.values) + Array(presenter.connections.values)).allSatisfy { !$0.panel.isVisible }
+        checks["disableReleasesBothKindsOfWindows"] = presenter.switching.isEmpty && presenter.connections.isEmpty && presenter.hideSwitch == nil && presenter.hideConnection == nil
+        presenter.show(run: 12, target: 1, rows: [keyboard], connection: false, english: false, reservedNames: [])
+        presenter.show(run: 0, target: 0, rows: [mouse], connection: true, english: false, reservedNames: [])
+        presenter.configure(ToastPreferences())
+        presenter.show(run: 12, target: 1, rows: complete, connection: false, english: false, reservedNames: [])
+        checks["reenableDoesNotReplayOldNotifications"] = presenter.activeContent == nil && presenter.connectionContent == nil &&
+            (Array(presenter.switching.values) + Array(presenter.connections.values)).allSatisfy { !$0.panel.isVisible }
+        presenter.show(run: 13, target: 1, rows: [keyboard], connection: false, english: false, reservedNames: [])
+        checks["newRunShowsAfterReenable"] = presenter.switching.values.allSatisfy { $0.panel.isVisible && $0.view.renderedStates == [.switching] }
+        try await Task.sleep(for: .milliseconds(2100))
+        presenter.configure(ToastPreferences(size: 150, transparency: 20))
+        checks["settingsDoNotReviveExpiredToasts"] = presenter.activeContent == nil && presenter.switching.values.allSatisfy { !$0.panel.isVisible }
         presenter.stop()
+
+        let disabled = NoticePresenter(preferences: ToastPreferences(enabled: false))
+        disabled.show(run: 1, target: 1, rows: [keyboard], connection: false, english: false, reservedNames: [])
+        disabled.show(run: 0, target: 0, rows: [mouse], connection: true, english: false, reservedNames: [])
+        disabled.configure(ToastPreferences(size: 70, transparency: 60))
+        disabled.show(run: 1, target: 1, rows: complete, connection: false, english: false, reservedNames: [])
+        checks["disabledStartupCreatesNoPanelsOrReplay"] = disabled.switching.isEmpty && disabled.connections.isEmpty
+        disabled.show(run: 2, target: 1, rows: [keyboard], connection: false, english: false, reservedNames: [])
+        let presentationDetails = disabled.switching.mapValues {
+            ["frame": NSStringFromRect($0.panel.frame), "viewFrame": NSStringFromRect($0.view.frame),
+             "bounds": NSStringFromRect($0.view.bounds), "opacity": String(describing: $0.panel.alphaValue),
+             "visible": String($0.panel.isVisible)]
+        }
+        try JSONSerialization.data(withJSONObject: presentationDetails, options: [.prettyPrinted, .sortedKeys])
+            .write(to: directory.appendingPathComponent("toast-presentation-details.json"))
+        checks["disabledStartupRetainsSizeAndOpacity"] = !disabled.switching.isEmpty && disabled.switching.values.allSatisfy {
+            // AppKit rounds the outer panel up to whole points at fractional sizes.
+            $0.panel.isVisible && abs($0.panel.alphaValue - 0.4) < 0.00001 &&
+                abs($0.panel.frame.width - $0.view.bounds.width * 0.7) <= 1 && abs($0.panel.frame.height - $0.view.bounds.height * 0.7) <= 1
+        }
+        disabled.stop()
+
+        let suite = "EasySwitch.ToastFixture.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(126, forKey: "floatingSize")
+        checks["legacyPreferencesKeepToastAppearance"] = ToastPreferences(defaults: defaults) == ToastPreferences()
+        let values = [ToastPreferences(enabled: false, size: -1, transparency: -1), ToastPreferences(size: 50),
+                      ToastPreferences(size: 75, transparency: 40), ToastPreferences(size: 200, transparency: 100),
+                      ToastPreferences(size: 999, transparency: 999)]
+        checks["preferencesClampAndPersistIndependently"] = values.allSatisfy {
+            $0.save(to: defaults)
+            return ToastPreferences(defaults: UserDefaults(suiteName: suite)!) == $0 && defaults.integer(forKey: "floatingSize") == 126
+        } && values.first?.size == 50 && values.first?.transparency == 0 && values.last?.size == 200 && values.last?.transparency == 100
         let report = try JSONSerialization.data(withJSONObject: checks, options: [.prettyPrinted, .sortedKeys])
         try report.write(to: directory.appendingPathComponent("toast-report.json"))
         if checks.values.contains(false) { throw CocoaError(.validationMultipleErrors) }
@@ -166,9 +300,7 @@ private final class NoticeView: NSView {
     override var isFlipped: Bool { true }
     var english = false, connection = false
     var run = -1
-    var log: FileLog?
     private(set) var renderedStates: [NoticeState] = []
-    private var lastDrawn = ""
     private var rows: [NoticeRow] = []
     private var title = ""
     private var contentWidth: CGFloat = 180, statusWidth: CGFloat = 80
@@ -197,8 +329,6 @@ private final class NoticeView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         defer {
             renderedStates = rows.map(\.state)
-            let signature = "run=\(run) connection=\(connection) states=\(renderedStates.map(\.rawValue).joined(separator: ","))"
-            if signature != lastDrawn { lastDrawn = signature; log?.write("TOAST_DRAW \(signature)") }
         }
         let body = bounds.insetBy(dx: 12, dy: 12)
         NSColor(srgbRed: 48/255, green: 48/255, blue: 48/255, alpha: 240/255).setFill()

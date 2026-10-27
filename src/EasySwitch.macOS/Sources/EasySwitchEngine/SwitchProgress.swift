@@ -1,7 +1,7 @@
 import Foundation
 
-public enum NoticeState: String, Sendable { case switching, complete, failed, unconfirmed, connected }
-public struct NoticeRow: Sendable, Identifiable {
+public enum NoticeState: String, Codable, Sendable { case switching, complete, failed, unconfirmed, connected }
+public struct NoticeRow: Codable, Sendable, Identifiable {
     public let id: String
     public let name: String
     public let kind: String

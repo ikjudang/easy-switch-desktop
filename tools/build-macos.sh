@@ -39,9 +39,12 @@ if [[ "$check_signing_only" == true ]]; then
 fi
 
 swift build --package-path "$package_root" --configuration "$configuration" --product EasySwitch
+swift build --package-path "$package_root" --configuration "$configuration" --product EasySwitchService
 binary_root="$(swift build --package-path "$package_root" --configuration "$configuration" --show-bin-path)"
 mkdir -p "$app_path/Contents/MacOS" "$app_path/Contents/Resources"
 cp "$binary_root/EasySwitch" "$app_path/Contents/MacOS/EasySwitch"
+cp "$binary_root/EasySwitchService" "$app_path/Contents/MacOS/EasySwitchService"
+mkdir -p "$app_path/Contents/Library/LaunchDaemons"
 ditto "$binary_root/EasySwitch_EasySwitchApp.bundle" "$app_path/Contents/Resources/EasySwitch_EasySwitchApp.bundle"
 
 python3 - "$app_path/Contents/Info.plist" <<'PY'
@@ -54,15 +57,29 @@ with open(sys.argv[1], 'wb') as output:
         'CFBundleIdentifier': 'io.github.ikjudang.EasySwitch',
         'CFBundleExecutable': 'EasySwitch',
         'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '0.1.7',
-        'CFBundleVersion': '8',
+        'CFBundleShortVersionString': '0.1.9',
+        'CFBundleVersion': '10',
         'LSMinimumSystemVersion': '13.0',
         'NSHighResolutionCapable': True,
         'NSSupportsAutomaticTermination': False,
         'LSUIElement': True,
-        'NSPrincipalClass': 'NSApplication'
+        'NSPrincipalClass': 'NSApplication',
+        'NSLocalNetworkUsageDescription': 'EasySwitch uses your local network to relay keyboard arrival to your paired tablet.',
+        'NSBonjourServices': ['_easyswitch._udp']
     }, output)
 PY
+
+python3 - "$app_path/Contents/Library/LaunchDaemons/io.github.ikjudang.EasySwitch.engine.plist" <<'PY_SERVICE'
+import plistlib, sys
+with open(sys.argv[1], 'wb') as output:
+    plistlib.dump({
+        'Label': 'io.github.ikjudang.EasySwitch.engine',
+        'BundleProgram': 'Contents/MacOS/EasySwitchService',
+        'MachServices': {'io.github.ikjudang.EasySwitch.engine': True},
+        'AssociatedBundleIdentifiers': ['io.github.ikjudang.EasySwitch'],
+        'RunAtLoad': True, 'KeepAlive': True, 'ProcessType': 'Interactive',
+    }, output)
+PY_SERVICE
 
 # Compile the native unmasked background/foreground icon. AppKit uses the named
 # asset instead of wrapping a legacy pre-rounded image in another system tile.
@@ -82,11 +99,15 @@ with open(sys.argv[1], 'wb') as target:
 PY
 rm -f "$app_path/Contents/Resources/EasySwitch.icns"
 # Sign inside out using the same pinned identity. This does not perform notarization.
-codesign --force --sign "$code_sign_identity" "$app_path/Contents/Resources/EasySwitch_EasySwitchApp.bundle"
-codesign --force --sign "$code_sign_identity" "$app_path"
+signing_options=(--timestamp=none)
+if [[ "${EASYSWITCH_DISTRIBUTION:-0}" == 1 ]]; then signing_options=(--options runtime --timestamp); fi
+codesign --force --sign "$code_sign_identity" "${signing_options[@]}" --identifier io.github.ikjudang.EasySwitch.engine "$app_path/Contents/MacOS/EasySwitchService"
+codesign --force --sign "$code_sign_identity" "${signing_options[@]}" "$app_path/Contents/Resources/EasySwitch_EasySwitchApp.bundle"
+codesign --force --sign "$code_sign_identity" "${signing_options[@]}" "$app_path"
 codesign --verify --deep --strict "$app_path"
 codesign --display --requirements - "$app_path"
 touch "$app_path"
+if [[ "${EASYSWITCH_INSTALL:-1}" == 1 ]]; then
 ditto "$app_path" "$installed_app_path"
 codesign --verify --deep --strict "$installed_app_path"
 touch "$installed_app_path"
@@ -94,3 +115,6 @@ lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchS
 if [[ -x "$lsregister" ]]; then "$lsregister" -f "$installed_app_path"; fi
 printf 'Local development app: %s\n' "$app_path"
 printf 'Installed app: %s\n' "$installed_app_path"
+else
+    printf 'Distribution build; installation deferred until notarization.\n'
+fi
