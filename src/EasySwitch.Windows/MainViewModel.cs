@@ -263,7 +263,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         foreach(var entry in log.RecentCodes())CodeLogs.Add(entry);
         log.Added += OnLog;
         log.CodeAdded+=OnCode;
-        log.WriteCode($"{SwitchCode.Prefix} APP START");
         _monitor.Changed += () => { TryFollow();if(_deferUiWork)ObserveConnections(_monitor.Snapshot());Dispatch(UpdateDevices); };
         _monitor.HostChanged += OnHostChanged;
         _monitor.PairingInvalidated += device => Dispatch(() =>
@@ -292,10 +291,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (seenBefore)
             {
                 Interlocked.Increment(ref _batchGeneration);
-                ClearFollow("키보드의 로컬 응답이 다시 확인됨");
-                _switches.CancelAll("키보드의 로컬 응답이 다시 확인됨");
+                ClearFollow("키보드의 이 PC 로컬 링크가 다시 감지됨");
+                _switches.CancelAll("키보드의 이 PC 로컬 링크가 다시 감지됨");
             }
-            _log.Write($"[{device.Name}] 키보드 도착 감지. 태블릿 LAN 알림은 이 버전에서 제공하지 않음");
+            _log.Write($"[{device.Name}] 키보드의 이 PC 로컬 링크 도착 감지. 현재 채널은 별도 응답으로 확인하며 태블릿 LAN 알림은 이 버전에서 제공하지 않음");
         };
         UpdateDevices();
         CodeSettings();
@@ -329,7 +328,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if(_settings.LoadError is not null || preferences.ContentFingerprint!=EnginePreferences.From(_settings.Value).ContentFingerprint)
             {
                 _settings.PreserveServiceSynchronization(preferences.Apply(new()));
-                _log.Write("서비스 초기 동기화: 변경 전 앱·서비스 설정을 로컬 selection-backups에 보존함");
             }
         };
         client.RestorePreferences(EnginePreferences.From(_settings.Value));
@@ -380,7 +378,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 if(item.Connection)ConnectionNoticeRequested?.Invoke(forwarded);else NoticeRequested?.Invoke(forwarded);
             }
         }
-        if(snapshot.HistoryTruncated)_log.Write("서비스 표시 이력의 일부가 이전 구간으로 넘어감. 전체 원문·코드는 서비스 로그 파일과 내보내기에 보존됨");
+        if(snapshot.HistoryTruncated)_log.Write("서비스 표시 이력의 일부가 이전 구간으로 넘어감. 연결 기록·코드는 서비스 로그 파일과 내보내기에 보존됨");
         Interlocked.Exchange(ref _pendingPresentation,new(snapshot with{Events=[]},acceptPreferences));SchedulePresentation();
     }
     private void SchedulePresentation()
@@ -605,7 +603,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             if (_pendingFollow is null) return;
             var expired=reason.Contains("10초 만료");
-            CodeEvent(_pendingFollow.Code,expired?"CAN_EXP":reason.Contains("로컬 응답")?"CAN_RET":reason.Contains("직접")?"CAN_MAN":reason.Contains("종료")?"CAN_STOP":"CAN_CFG");
+            CodeEvent(_pendingFollow.Code,expired?"CAN_EXP":reason.Contains("로컬 응답") || reason.Contains("로컬 링크")?"CAN_RET":reason.Contains("직접")?"CAN_MAN":reason.Contains("종료")?"CAN_STOP":"CAN_CFG");
             PostNotice(_pendingFollow.Code,_pendingFollow.MouseIds.Select(id=>NoticeRow(id,expired?DeviceNoticeState.WaitExpired:DeviceNoticeState.Cancelled)).ToArray());
             _pendingFollow = null;
             _log.Write($"대기 중인 따라 전환 취소: {reason}");
@@ -742,7 +740,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var enabled=path is not null && (previous.ExportEnabled || _enableAfterFolder);
             _log.SetExportDirectory(enabled?path:null);
             StoreSettings(previous with { ExportDirectory = path, ExportEnabled=enabled });
-            _log.Write(path is null ? "외부 폴더 동시 기록 끔" : $"외부 폴더 동시 기록 켬: {path}");
             SettingsFeedback = path is null ? "앱이 로컬 폴더에만 로그를 기록해." : "앱이 선택한 폴더에도 새 로그를 자동으로 기록해.";
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
@@ -776,14 +773,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         var picker=new Microsoft.Win32.SaveFileDialog{Title=T("연결 로그 내보내기","Export connection log"),Filter="Text log (*.txt)|*.txt",FileName=$"easyswitch-pc-{DateTime.Now:yyyyMMdd-HHmmss}.txt"};
         if(picker.ShowDialog()!=true)return;
-        try{if(_service is not null)await _service.ExportAsync(picker.FileName,false);else File.WriteAllLines(picker.FileName,_log.Recent().Reverse().Select(e=>e.Line),new System.Text.UTF8Encoding(true));_log.Write($"사용자가 연결 로그를 내보냄: {picker.FileName}");}
+        try{if(_service is not null)await _service.ExportAsync(picker.FileName,false);else File.WriteAllLines(picker.FileName,_log.Recent().Reverse().Select(e=>e.Line),new System.Text.UTF8Encoding(true));}
         catch(Exception error)when(error is IOException or UnauthorizedAccessException or TimeoutException or OperationCanceledException){_log.Write($"로그 내보내기 실패: {error.Message}");}
     }
     private async void ExportCodes()
     {
         var picker=new Microsoft.Win32.SaveFileDialog{Title=T("코드 로그 내보내기","Export status codes"),Filter="Code log (*.codes.txt)|*.codes.txt|Text log (*.txt)|*.txt",FileName=$"easyswitch-pc-{DateTime.Now:yyyyMMdd-HHmmss}.codes.txt"};
         if(picker.ShowDialog()!=true)return;
-        try{if(_service is not null)await _service.ExportAsync(picker.FileName,true);else _log.ExportCodes(picker.FileName);_log.Write($"사용자가 코드 로그를 내보냄: {picker.FileName}");}
+        try{if(_service is not null)await _service.ExportAsync(picker.FileName,true);else _log.ExportCodes(picker.FileName);}
         catch(Exception error)when(error is IOException or UnauthorizedAccessException or TimeoutException or OperationCanceledException){_log.Write($"코드 로그 내보내기 실패: {error.Message}");}
     }
 
@@ -795,8 +792,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private void OnLog(LogEntry entry)
     {
-        // Raw traces still go to the complete file and the opt-in TX/RX view. Do not queue a UI
-        // notification for every packet while the user is on another screen.
+        // When diagnostic tracing is explicitly enabled, keep it in the file and connection
+        // log view without queueing packet updates on other screens.
         if(entry.IsProtocolTrace && !IsLog)return;
         if(_dispatcher.CheckAccess()){AddLog(entry);Notify(nameof(LogSummary));return;}
         _pendingLogs.Enqueue(entry);ScheduleLogs();
@@ -847,7 +844,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         ClearFollow("앱 종료");
         await _switches.StopAsync("앱 종료").ConfigureAwait(false);
         await _monitor.DisposeAsync().ConfigureAwait(false);
-        _log.WriteCode($"{SwitchCode.Prefix} APP STOP");
         _log.Added -= OnLog;
         _log.CodeAdded-=OnCode;
         _settings.Saved-=ServiceSettingsSaved;

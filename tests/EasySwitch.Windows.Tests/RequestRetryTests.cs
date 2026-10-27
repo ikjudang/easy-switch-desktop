@@ -40,7 +40,7 @@ public sealed class RequestRetryTests
     [Theory]
     [InlineData("[Bolt] RX 응답 10 03 8F 00 09 09 00",true)]
     [InlineData("[Bolt] TX 10 03 00 09 18 14 00",true)]
-    [InlineData("[Bolt #4] 조회 시간 초과: 10 04 00 09 18 14 00",true)]
+    [InlineData("[Bolt #4] 조회 시간 초과: feature 0x00, 함수 0x0. 응답을 받지 못함",false)]
     [InlineData("[Mouse] HID++ 오류: 10 02 FF 09 09 08 00",false)]
     [InlineData("[Mouse] 전환 실패: IOException",false)]
     public void DefaultActivityViewKeepsFailuresAndFullTraceRemainsClassifiable(string message,bool trace)

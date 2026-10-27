@@ -22,6 +22,8 @@ EasySwitch Windows $version
 
 빠른 실행 패키지는 압축을 푼 뒤 EasySwitch.exe를 실행합니다.
 함께 풀린 폴더와 파일을 유지합니다.
+이번 시험판의 메모리 절감 표시 방식을 확인하려면 EasySwitch를 트레이에서 완전히 종료한 뒤
+실행 파일에 --memory-test 옵션을 붙여 다시 실행합니다. 이 옵션은 앱 설정에 저장되지 않습니다.
 
 키보드와 마우스를 운영체제나 제조사의 연결 도구에서 먼저 연결합니다.
 같은 채널이 같은 기기를 가리키도록 연결을 맞춥니다.
@@ -55,7 +57,7 @@ Assets/Licenses에 번들 글꼴의 OFL 라이선스를 함께 보관합니다.
 "@
     [IO.File]::WriteAllText((Join-Path $Directory 'README.txt'), $text + "`r`n", [Text.UTF8Encoding]::new($false))
 }
-& $sdk publish $projectPath -c Release -r $Runtime --self-contained true --artifacts-path $intermediates -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -o $portableOutput --nologo
+& $sdk publish $projectPath -c Release -r $Runtime --self-contained true --artifacts-path $intermediates -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:SatelliteResourceLanguages=ko -p:UseSharedCompilation=false -m:1 -p:DebugType=None -o $portableOutput --nologo
 if ($LASTEXITCODE -ne 0) { throw "Publish failed: $LASTEXITCODE" }
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $portableOutput 'EasySwitch.exe') -Destination (Join-Path $output $exeName) -Force
@@ -68,7 +70,7 @@ New-Item -ItemType Directory -Path (Split-Path -Parent $archive) -Force | Out-Nu
 Compress-Archive -LiteralPath @((Join-Path $output $exeName),(Join-Path $output 'README.txt'),(Join-Path $output 'status-codes.md'),(Join-Path $output 'Assets'),(Join-Path $output 'SHA256SUMS.txt')) -DestinationPath $archive -Force
 $fastOutput = Join-Path $repo "artifacts\EasySwitch-$version-fast-$Runtime"
 $fastArchive = Join-Path $output $fastName
-& $sdk publish $projectPath -c Release -r $Runtime --self-contained true --artifacts-path $intermediates -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:DebugType=None -o $fastOutput --nologo
+& $sdk publish $projectPath -c Release -r $Runtime --self-contained true --artifacts-path $intermediates -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:SatelliteResourceLanguages=ko -p:UseSharedCompilation=false -m:1 -p:DebugType=None -o $fastOutput --nologo
 if ($LASTEXITCODE -ne 0) { throw "Fast publish failed: $LASTEXITCODE" }
 Write-PackageReadme $fastOutput 'EasySwitch.exe'
 Copy-Item -LiteralPath (Join-Path $output 'status-codes.md') -Destination $fastOutput -Force

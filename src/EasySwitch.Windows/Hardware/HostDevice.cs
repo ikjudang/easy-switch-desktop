@@ -158,7 +158,7 @@ internal sealed class HostDevice : IHostDevice
         var info=Volatile.Read(ref _info);
         if (!info.Online) return;
         Update(info with { Online = false });
-        _log.Write($"[{Name}] {(!TransportAvailable || LocalLinkConnected==false?"로컬 연결 종료":"채널 제어 응답 미확인: 기기 선택을 유지하고 자동 조회를 다시 시도함")}");
+        _log.Write($"[{Name}] {(!TransportAvailable || LocalLinkConnected==false?"이 PC의 HID 통로 또는 로컬 링크 사용 불가. 무선 이탈·목적지 도착은 미확인":"채널 제어 응답 미확인: 기기 선택을 유지하고 자동 조회를 다시 시도함")}");
     }
 
     private void Update(DeviceInfo info,bool forceChanged=false)
@@ -300,9 +300,9 @@ internal sealed class HostDevice : IHostDevice
             onError?.Invoke(error);
             var busy=error.Protocol==2?error.ErrorCode==0x08:error.ErrorCode==0x07;
             // Unknown-device errors on a root lookup belong to receiver slot discovery, not
-            // to a setCurrentHost failure. Preserve the complete frames and distinguish the cause.
+            // to a setCurrentHost failure. Keep the error code without formatting raw frames.
             var discovery=_connection.IsReceiver && Info.FeatureIndex==0 && request.FeatureIndex==0 && error.Protocol==1 && error.ErrorCode is 0x08 or 0x09;
-            _log.Write($"[{Name}] {(discovery?"수신기 미확인 슬롯 조회":"HID++ 오류")}: {Hex.Format(response)}, 요청 {request} · P{error.Protocol} C{error.ErrorCode:X2}{(busy?" BUSY":"")}");
+            _log.Write($"[{Name}] {(discovery?"수신기 미확인 슬롯 조회":"HID++ 오류")}: 요청 feature 0x{request.FeatureIndex:X2}, 함수 0x{request.FunctionId:X1} · P{error.Protocol} C{error.ErrorCode:X2}{(busy?" BUSY":"")}");
         },cancel).ConfigureAwait(false);
         return raw is null || HidppFrameParser.IsError(raw)?null:HidppFrameParser.Parse(raw);
     }

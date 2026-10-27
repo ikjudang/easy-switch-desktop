@@ -10,6 +10,15 @@ namespace EasySwitch.Windows;
 public partial class MainWindow : Window
 {
     public bool AllowClose { get; set; }
+    internal event Action? CloseToTrayRequested;
+    internal sealed record ViewState(bool FloatingExpanded,bool ExportExpanded,bool ToastExpanded,bool ShowCodeLog);
+    internal ViewState CaptureViewState()=>new(_floatingExpanded,_exportExpanded,_toastExpanded,_showCodeLog);
+    internal void RestoreViewState(ViewState? state)
+    {
+        if(state is null)return;
+        _floatingExpanded=state.FloatingExpanded;_exportExpanded=state.ExportExpanded;_toastExpanded=state.ToastExpanded;
+        _showCodeLog=state.ShowCodeLog;
+    }
     public MainWindow()
     {
         InitializeComponent();
@@ -24,7 +33,7 @@ public partial class MainWindow : Window
             DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
         };
         Closing += OnClosing;
-        StateChanged += (_, _) => { if (WindowState == WindowState.Minimized) Hide(); };
+        StateChanged += (_, _) => { if (WindowState == WindowState.Minimized) CloseToTray(); };
     }
 
     public void ShowFromTray()
@@ -34,11 +43,15 @@ public partial class MainWindow : Window
         Activate();
     }
 
+    private void CloseToTray()
+    {
+        if(CloseToTrayRequested is {} callback)callback();else Hide();
+    }
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         if (AllowClose) return;
         e.Cancel = true;
-        Hide();
+        CloseToTray();
     }
 
     private void LogList_KeyDown(object sender, KeyEventArgs e)

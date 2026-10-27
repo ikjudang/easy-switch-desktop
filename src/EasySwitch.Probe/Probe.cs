@@ -4,21 +4,25 @@ using EasySwitch.Hidpp;
 
 namespace EasySwitch.Probe;
 
-internal sealed record ProbeOptions(string LogDirectory, double Minutes, int SoftwareId, int TimeoutMs, bool ErrorProbe)
+internal sealed record ProbeOptions(string LogDirectory, double Minutes, int SoftwareId, int TimeoutMs, bool ErrorProbe, bool TraceFrames)
 {
     public static ProbeOptions Parse(string[] args)
     {
-        var options = new ProbeOptions(Path.Combine(Environment.CurrentDirectory, "logs"), 0, HidppConstants.DefaultSoftwareId, 1500, false);
-        for (var i = 0; i + 1 < args.Length; i += 2)
+        var options = new ProbeOptions(Path.Combine(Environment.CurrentDirectory, "logs"), 0, HidppConstants.DefaultSoftwareId, 1500, false, false);
+        for (var i = 0; i < args.Length; i++)
         {
-            options = args[i] switch
+            var name = args[i];
+            if (name == "--trace-frames") { options = options with { TraceFrames = true }; continue; }
+            if (i + 1 >= args.Length) throw new ArgumentException($"옵션 값이 없음: {name}");
+            var value = args[++i];
+            options = name switch
             {
-                "--log-dir" => options with { LogDirectory = args[i + 1] },
-                "--minutes" => options with { Minutes = double.Parse(args[i + 1]) },
-                "--swid" => options with { SoftwareId = Convert.ToInt32(args[i + 1], 16) },
-                "--timeout-ms" => options with { TimeoutMs = int.Parse(args[i + 1]) },
-                "--error-probe" => options with { ErrorProbe = bool.Parse(args[i + 1]) },
-                _ => throw new ArgumentException($"알 수 없는 옵션: {args[i]}"),
+                "--log-dir" => options with { LogDirectory = value },
+                "--minutes" => options with { Minutes = double.Parse(value) },
+                "--swid" => options with { SoftwareId = Convert.ToInt32(value, 16) },
+                "--timeout-ms" => options with { TimeoutMs = int.Parse(value) },
+                "--error-probe" => options with { ErrorProbe = bool.Parse(value) },
+                _ => throw new ArgumentException($"알 수 없는 옵션: {name}"),
             };
         }
         return options;
@@ -54,6 +58,7 @@ internal sealed class Probe(ProbeLog log, ProbeOptions options)
         log.Write("EasySwitch 측정 도구 — 기기의 채널을 바꾸는 명령은 보내지 않습니다. 읽기 조회와 듣기만 합니다.");
         log.Write($"로그 파일: {log.FilePath}");
         log.Write($"윈도우 {Environment.OSVersion.Version}, 우리 software id 0x{options.SoftwareId:X}, 응답 상한 {options.TimeoutMs}ms");
+        log.Write($"HID++ 프레임 원문 기록: {(options.TraceFrames ? "켜짐" : "꺼짐")}");
         log.Write($"에러 배치 실험: {(options.ErrorProbe ? "실행" : "실행하지 않음")}. 정기 기기 조회 없이 시작 및 연결 알림 때 조회합니다.");
         var logi = Process.GetProcesses().Where(p => p.ProcessName.Contains("logi", StringComparison.OrdinalIgnoreCase))
             .Select(p => p.ProcessName).Distinct().Order().ToList();
@@ -201,7 +206,7 @@ internal sealed class Probe(ProbeLog log, ProbeOptions options)
                 }
                 catch (InvalidDataException error)
                 {
-                    log.Write($"{tag} 현재 채널 응답이 이상함: {error.Message} | {Hex.Format(hostReply.Raw)}");
+                    log.Write($"{tag} 현재 채널 응답이 이상함: {error.Message}{RawSuffix(hostReply.Raw)}");
                 }
             }
             else
@@ -258,14 +263,14 @@ internal sealed class Probe(ProbeLog log, ProbeOptions options)
             _ => "응답 없음(시간 초과)",
         };
         _errorLayouts.Add($"{tag} {verdict}");
-        log.Write($"{tag} 에러 배치 확인: {verdict}{(reply is null ? "" : $" | {Hex.Format(reply.Raw)}")}");
+        log.Write($"{tag} 에러 배치 확인: {verdict}{(reply is null ? "" : RawSuffix(reply.Raw))}");
     }
 
     private async Task<RequestResult?> RequestAsync(HidppLink link, byte[] request)
     {
         try
         {
-            log.Write($"[{link.Name}] TX {Hex.Format(request)}");
+            if (options.TraceFrames) log.Write($"[{link.Name}] TX 시도 {Hex.Format(request)}");
             return await link.RequestAsync(request, TimeSpan.FromMilliseconds(options.TimeoutMs), _cancel);
         }
         catch (OperationCanceledException)
@@ -274,7 +279,7 @@ internal sealed class Probe(ProbeLog log, ProbeOptions options)
         }
         catch (Exception error)
         {
-            log.Write($"[{link.Name}] 보내기 실패: {error.GetType().Name} {error.Message} | {Hex.Format(request)}");
+            log.Write($"[{link.Name}] 보내기 실패: {error.GetType().Name} {error.Message}{RawSuffix(request)}");
             return null;
         }
     }
@@ -282,28 +287,38 @@ internal sealed class Probe(ProbeLog log, ProbeOptions options)
     private void OnFrame(HidppLink link, byte[] raw, bool mine)
     {
         Interlocked.Increment(ref _frames);
-        log.Write($"{Tag(link, raw.Length > 1 ? raw[1] : 0)} {Explain(link, raw, mine)} | {Hex.Format(raw)}");
+        var description = Explain(link, raw, mine);
+        if (description is not null)
+        {
+            var tag = Tag(link, raw.Length > 1 ? raw[1] : 0);
+            log.Write(options.TraceFrames
+                ? $"{tag} RX {description} | {Hex.Format(raw)}"
+                : $"{tag} {description}");
+        }
         if (link.IsReceiver && ReceiverMessages.ParseDeviceConnection(raw) is { LinkEstablishedAssumed: true } notice)
             _ = ProbeDeviceAsync(link, notice.DeviceIndex, "0x41 연결 알림", DateTime.Now);
     }
 
-    /// <summary>들어온 리포트 하나를 사람이 읽을 말로. 주인(기기·우리·다른 앱)을 가르는 게 핵심이다.</summary>
-    private string Explain(HidppLink link, byte[] raw, bool mine)
+    /// <summary>Always update summary counters; describe only connectivity or opted-in raw frames.</summary>
+    private string? Explain(HidppLink link, byte[] raw, bool mine)
     {
-        if (raw.Length < HidppConstants.ShortLength) return $"짧은 리포트({raw.Length}B)";
+        // Ordinary keyboard and pointer reports use other report IDs and are never logged.
+        if (raw.Length == 0 || raw[0] != HidppConstants.ReportIdShort && raw[0] != HidppConstants.ReportIdLong) return null;
+        if (raw.Length < HidppConstants.ShortLength) return options.TraceFrames ? $"짧은 HID++ 리포트({raw.Length}B)" : null;
         int device = raw[1], b2 = raw[2], b3 = raw[3];
         if (b2 == HidppConstants.Hidpp20Error)
-            return $"HID++ 2.0 에러 — byte3 0x{b3:X2}, byte4 0x{raw[4]:X2}, 코드 0x{raw[5]:X2}{(mine ? " (우리 요청)" : "")}";
+            return options.TraceFrames || mine ? $"HID++ 2.0 에러 — byte3 0x{b3:X2}, byte4 0x{raw[4]:X2}, 코드 0x{raw[5]:X2}{(mine ? " (우리 요청)" : "")}" : null;
         if (b2 == HidppConstants.Hidpp10Error)
-            return $"HID++ 1.0 에러 — byte3 0x{b3:X2}, byte4 0x{raw[4]:X2}, 코드 0x{raw[5]:X2}{(mine ? " (우리 요청)" : "")}";
+            return options.TraceFrames || mine ? $"HID++ 1.0 에러 — byte3 0x{b3:X2}, byte4 0x{raw[4]:X2}, 코드 0x{raw[5]:X2}{(mine ? " (우리 요청)" : "")}" : null;
         if (link.IsReceiver && b2 is >= 0x40 and <= 0x4F)
         {
             if (ReceiverMessages.ParseDeviceConnection(raw) is { } notice)
                 return $"수신기 연결 알림(0x41): 프로토콜 0x{notice.Protocol:X2}, 플래그 0x{notice.Flags:X2} → 링크 {(notice.LinkEstablishedAssumed ? "있음" : "없음")}(추정), 무선 PID {notice.WirelessProductId:X4}";
-            return $"수신기 알림 0x{b2:X2}";
+            if (b2 == HidppConstants.Hidpp10DeviceDisconnection) return "수신기 등록 해제 알림(0x40)";
+            return options.TraceFrames ? $"수신기 알림 0x{b2:X2}" : null;
         }
         if (link.IsReceiver && device == HidppConstants.DeviceIndexDirect && b2 is >= 0x80 and <= 0x83)
-            return $"수신기 레지스터 응답(sub_id 0x{b2:X2}, 주소 0x{b3:X2}) — {(mine ? "우리 요청" : "다른 앱의 요청")}";
+            return options.TraceFrames ? $"수신기 레지스터 응답(sub_id 0x{b2:X2}, 주소 0x{b3:X2}) — {(mine ? "우리 요청" : "다른 앱의 요청")}" : null;
 
         var softwareId = b3 & 0x0F;
         var function = b3 >> 4;
@@ -316,12 +331,16 @@ internal sealed class Probe(ProbeLog log, ProbeOptions options)
                 Interlocked.Increment(ref _switchSignals);
                 return $"전환 신호: 목적지 ch{target + 1} (params[0]=0x{raw[4]:X2})";
             }
-            return $"기기 이벤트 — feature 0x{b2:X2} fn {function}";
+            return options.TraceFrames ? $"기기 이벤트 — feature 0x{b2:X2} fn {function}" : null;
         }
         if (softwareId == options.SoftwareId)
-            return mine ? $"우리 응답 — feature 0x{b2:X2} fn {function}" : $"우리 software id인데 짝이 없는 응답 — 다른 앱과 겹칠 수 있음 (feature 0x{b2:X2} fn {function})";
+        {
+            if (!options.TraceFrames) return null;
+            return mine ? $"우리 응답 — feature 0x{b2:X2} fn {function}"
+                : $"우리 software id인데 짝이 없는 응답 — 다른 앱과 겹칠 수 있음 (feature 0x{b2:X2} fn {function})";
+        }
         _otherSoftwareIds.AddOrUpdate(softwareId, 1, (_, count) => count + 1);
-        return $"다른 앱 응답 — software id 0x{softwareId:X}, feature 0x{b2:X2} fn {function}";
+        return options.TraceFrames ? $"다른 앱 응답 — software id 0x{softwareId:X}, feature 0x{b2:X2} fn {function}" : null;
     }
 
     private static Dictionary<int, int> Features(HidppLink link, int device)
@@ -339,10 +358,12 @@ internal sealed class Probe(ProbeLog log, ProbeOptions options)
         return link.DeviceNames.TryGetValue(device, out var name) ? $"[{link.Name} #{device} {name}]" : $"[{link.Name} #{device}]";
     }
 
-    private static string Describe(RequestResult? result) => result switch
+    private string RawSuffix(byte[] raw) => options.TraceFrames ? $" | {Hex.Format(raw)}" : "";
+
+    private string Describe(RequestResult? result) => result switch
     {
         null => "응답 없음(시간 초과)",
-        { IsError: true } => $"에러 코드 0x{result.ErrorCode:X2} | {Hex.Format(result.Raw)}",
-        _ => $"응답 {Hex.Format(result.Raw)}",
+        { IsError: true } => $"에러 코드 0x{result.ErrorCode:X2}{RawSuffix(result.Raw)}",
+        _ => $"응답 수신{RawSuffix(result.Raw)}",
     };
 }

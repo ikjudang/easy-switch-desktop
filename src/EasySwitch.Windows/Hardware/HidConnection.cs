@@ -10,6 +10,7 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
 {
     private readonly List<(HidInterface Info, FileStream Stream)> _channels;
     private readonly AppLog _log;
+    private readonly bool _traceFrames;
     private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _writeGate = new(1);
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _requestGates = new();
@@ -42,11 +43,12 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
         Regex.Replace(info.Path, @"&col[0-9a-f]+", "", RegexOptions.IgnoreCase),
         @"&[0-9a-f]{4}(?=#\{)", "", RegexOptions.IgnoreCase).ToLowerInvariant();
 
-    public HidConnection(string key, List<(HidInterface Info, FileStream Stream)> channels, AppLog log,TimeSpan? writeTimeout=null)
+    public HidConnection(string key, List<(HidInterface Info, FileStream Stream)> channels, AppLog log,TimeSpan? writeTimeout=null,bool traceFrames=false)
     {
         Key = key;
         _channels = channels;
         _log = log;
+        _traceFrames=traceFrames;
         _writeTimeout=writeTimeout??TimeSpan.FromSeconds(1);
         IsReceiver = channels[0].Info.IsReceiverHidpp;
         Name = IsReceiver ? $"{ConnectionLabel} {ProductId:X4}" :
@@ -96,7 +98,7 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
                 if (length == 0) throw new EndOfStreamException("HID 입력 종료");
                 var raw = buffer[..length];
                 var matched = raw.Length > 1 && _pending.TryGetValue(raw[1], out var pending) && pending.TryComplete(raw);
-                _log.Write($"[{Name}] RX{(matched ? " 응답" : "")} {Hex.Format(raw)}");
+                if(_traceFrames)_log.Write($"[{Name}] RX{(matched ? " 응답" : "")} {Hex.Format(raw)}");
                 try { Received?.Invoke(this, raw); }
                 catch (Exception error) when (!_stop.IsCancellationRequested)
                 {
@@ -133,7 +135,7 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
             try { return await pending.Completion.Task.WaitAsync(TimeSpan.FromMilliseconds(750), linked.Token).ConfigureAwait(false); }
             catch (TimeoutException)
             {
-                _log.Write($"[{Name} #{request[1]}] 조회 시간 초과: {Hex.Format(request)}");
+                _log.Write($"[{Name} #{request[1]}] 조회 시간 초과: feature 0x{request[2]:X2}, 함수 0x{request[3] >> 4:X1}. 응답을 받지 못함");
                 return null;
             }
         }
@@ -162,7 +164,7 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
             if (request.Length == HidppConstants.ShortLength && payload.Length >= HidppConstants.LongLength)
                 payload[0] = HidppConstants.ReportIdLong;
             writing=true;await channel.Stream.WriteAsync(payload, linked.Token).ConfigureAwait(false);
-            _log.Write($"[{Name}] TX {Hex.Format(payload)}");
+            if(_traceFrames)_log.Write($"[{Name}] TX {Hex.Format(payload)}");
         }
         catch(IOException error) when(error.HResult==unchecked((int)0x8007048F)) // ERROR_DEVICE_NOT_CONNECTED
         {

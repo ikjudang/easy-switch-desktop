@@ -1,10 +1,12 @@
-EasySwitch Windows 0.2.39
+EasySwitch Windows 0.2.40
 
-이 폴더의 EasySwitch-0.2.39-win-x64.exe 파일을 실행합니다. 별도의 런타임 설치는 필요 없습니다.
+이 폴더의 EasySwitch-0.2.40-win-x64.exe 파일을 실행합니다. 별도의 런타임 설치는 필요 없습니다.
 업데이트와 다른 배포 파일: https://github.com/ikjudang/easy-switch-desktop/releases
 
 빠른 실행 패키지는 압축을 푼 뒤 EasySwitch.exe를 실행합니다.
 함께 풀린 폴더와 파일을 유지합니다.
+이번 시험판의 메모리 절감 표시 방식을 확인하려면 EasySwitch를 트레이에서 완전히 종료한 뒤
+실행 파일에 --memory-test 옵션을 붙여 다시 실행합니다. 이 옵션은 앱 설정에 저장되지 않습니다.
 
 키보드와 마우스를 운영체제나 제조사의 연결 도구에서 먼저 연결합니다.
 같은 채널이 같은 기기를 가리키도록 연결을 맞춥니다.

@@ -150,6 +150,32 @@ public sealed class PersistenceAndTransportTests : IDisposable
         Assert.Equal(2, File.ReadAllBytes(shortPath)[1]);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task HidFrameTraceRequiresExplicitOptIn(bool traceFrames)
+    {
+        using var log=new AppLog(Path.Combine(_directory,"trace"));
+        var output=Path.Combine(_directory,"output.bin");
+        await using(var connection=new HidConnection("write",[(Info(output,20),Open(output))],log,traceFrames:traceFrames))
+            await connection.SendAsync(RootFeature.BuildGetFeature(0x1814).ToBytes(),CancellationToken.None);
+        var input=Path.Combine(_directory,"input.bin");
+        var frame=new byte[]{0x10,0xFF,0x00,0x09,0x18,0x14,0x00};
+        File.WriteAllBytes(input,frame);
+        var stream=new FileStream(input,FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite,0,FileOptions.Asynchronous);
+        await using(var connection=new HidConnection("read",[(Info(input,7),stream)],log,traceFrames:traceFrames))
+        {
+            var received=new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.Received+=(_,raw)=>received.TrySetResult(raw);
+            connection.Start();
+            Assert.Equal(frame,await received.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+        var content=ReadShared(log.FilePath);
+        Assert.Equal(traceFrames,content.Contains("] TX ",StringComparison.Ordinal));
+        Assert.Equal(traceFrames,content.Contains("] RX ",StringComparison.Ordinal));
+        Assert.Equal(20,new FileInfo(output).Length);
+    }
+
     private static HidInterface Info(string path, int length) => new(path, 0x046D, 0xC548, 0xFF00, length == 7 ? 1 : 2, length, length, "Test HID");
     private static FileStream Open(string path) => new(path, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite, 0, FileOptions.Asynchronous);
     private static string ReadShared(string path)
