@@ -51,6 +51,7 @@ public sealed class SwitchCoordinator(Action<string> log, TimeSpan? verification
                         previous.Observers.Add(progress);
                         if(previous.LastProgress is {} last)NotifyProgress(progress,last.Step==SwitchStep.Ended?last:last with {Step=SwitchStep.Joined});
                     }
+                    log($"[{device.Name}] 새 전환 명령 생략: 같은 채널 {target + 1} 요청이 이미 진행 중이라 결과를 함께 기다림");
                     return previous.Completion.Task;
                 }
                 previous.Cancel.Cancel();
@@ -167,14 +168,14 @@ public sealed class SwitchCoordinator(Action<string> log, TimeSpan? verification
                 if (device.ConnectionGeneration != generation)
                 {
                     endReason=SwitchEndReason.ConnectionChanged;
-                    log($"[{device.Name}] 이전 전환 취소: 기기가 이 PC에 다시 도착함");
+                    log($"[{device.Name}] 이전 전환 취소: 이 PC의 통로 세대가 변경됨. 새 로컬 연결 여부와 현재 채널은 별도 확인 필요");
                     result = SwitchOutcome.Cancelled;
                     return;
                 }
                 if (!device.TransportAvailable || device.LocalLinkConnected == false)
                 {
                     endReason=writes==0?SwitchEndReason.NoLocalLink:SwitchEndReason.LocalDeparture;
-                    log($"[{device.Name}] 로컬 통로 닫힘. 목적지 연결 여부는 확인할 수 없음");
+                    log($"[{device.Name}] 이 PC의 HID 통로 또는 로컬 링크 사용 불가. 무선 이탈·목적지 도착은 미확인");
                     result = writes == 0 ? SwitchOutcome.Unverified : SwitchOutcome.LocalLinkClosed;
                     return;
                 }
@@ -184,21 +185,21 @@ public sealed class SwitchCoordinator(Action<string> log, TimeSpan? verification
                     await device.SetHostAsync(work.Target, cancel).ConfigureAwait(false);
                     writes++;
                     Report(SwitchStep.Written,EndPhase());
-                    log($"[{device.Name}] 채널 {work.Target + 1} 전환 명령 전송 ({reason}, {attempt}/{attempts})");
+                    log($"[{device.Name}] 채널 {work.Target + 1} HID 출력 쓰기 완료 ({reason}, {attempt}/{attempts}). 기기 처리·목적지 도착은 미확인");
                     await WaitForDepartureAsync(device, generation, cancel).ConfigureAwait(false);
                     cancel.ThrowIfCancellationRequested();
                     if (device.ConnectionGeneration != generation)
                     {
                         endReason=SwitchEndReason.ConnectionChanged;
                         result = SwitchOutcome.Cancelled;
-                        log($"[{device.Name}] 이전 전환 확인 취소: 새 연결에서 오래된 명령을 반복하지 않음");
+                        log($"[{device.Name}] 이전 전환 확인 취소: 이 PC의 통로 세대가 변경돼 오래된 명령을 반복하지 않음");
                         return;
                     }
                     if (!device.TransportAvailable || device.LocalLinkConnected == false)
                     {
                         endReason=SwitchEndReason.LocalDeparture;
                         result = SwitchOutcome.LocalLinkClosed;
-                        log($"[{device.Name}] 전송 뒤 기기 링크 종료. 수신기가 남아 있어도 재전송하지 않음. 목적지 도착은 미확인");
+                        log($"[{device.Name}] HID 출력 쓰기 뒤 이 PC의 HID 통로 또는 로컬 링크 사용 불가. 재전송하지 않음. 무선 이탈·목적지 도착은 미확인");
                         return;
                     }
                     Report(SwitchStep.VerifyStarted);phase=2;phaseAt=work.Clock.ElapsedMilliseconds;
@@ -209,14 +210,14 @@ public sealed class SwitchCoordinator(Action<string> log, TimeSpan? verification
                     {
                         endReason=SwitchEndReason.ConnectionChanged;
                         result = SwitchOutcome.Cancelled;
-                        log($"[{device.Name}] 이전 전환 취소: 확인 중 새 연결이 시작됨");
+                        log($"[{device.Name}] 이전 전환 취소: 확인 중 이 PC의 통로 세대가 변경됨");
                         return;
                     }
                     if (!device.TransportAvailable || device.LocalLinkConnected == false)
                     {
                         endReason=SwitchEndReason.LocalDeparture;
                         result = SwitchOutcome.LocalLinkClosed;
-                        log($"[{device.Name}] 확인 중 기기 링크 종료. 목적지 도착은 미확인");
+                        log($"[{device.Name}] 확인 중 이 PC의 HID 통로 또는 로컬 링크 사용 불가. 무선 이탈·목적지 도착은 미확인");
                         return;
                     }
                     if (host?.CurrentHost == work.Target)
@@ -224,7 +225,7 @@ public sealed class SwitchCoordinator(Action<string> log, TimeSpan? verification
                         endReason=SwitchEndReason.TargetReported;
                         Report(SwitchStep.TargetReported,queryMs,host.CurrentHost);
                         result = SwitchOutcome.TargetReported;
-                        log($"[{device.Name}] 기기가 채널 {work.Target + 1}을 보고함");
+                        log($"[{device.Name}] 이 PC 통로의 조회 응답에서 채널 {work.Target + 1}을 보고함. 목적지의 실제 연결은 별도 확인 필요");
                         return;
                     }
                     lastReplyWasSource = host is not null;
@@ -240,14 +241,14 @@ public sealed class SwitchCoordinator(Action<string> log, TimeSpan? verification
                     {
                         endReason=SwitchEndReason.ConnectionChanged;
                         result = SwitchOutcome.Cancelled;
-                        log($"[{device.Name}] 통신 중 새 연결이 시작돼 이전 전환을 취소함");
+                        log($"[{device.Name}] 통신 중 이 PC의 통로 세대가 변경돼 이전 전환을 취소함");
                         return;
                     }
                     if (!device.TransportAvailable || device.LocalLinkConnected == false)
                     {
                         endReason=writes>0?SwitchEndReason.LocalDeparture:SwitchEndReason.NoLocalLink;
                         result = writes > 0 ? SwitchOutcome.LocalLinkClosed : SwitchOutcome.Unverified;
-                        log($"[{device.Name}] 통신 중 기기 링크 종료. 목적지 도착은 미확인");
+                        log($"[{device.Name}] 통신 중 이 PC의 HID 통로 또는 로컬 링크 사용 불가. 무선 이탈·목적지 도착은 미확인");
                         return;
                     }
                     lastReplyWasSource = false;

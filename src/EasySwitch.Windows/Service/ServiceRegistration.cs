@@ -69,7 +69,6 @@ internal static class ServiceRegistration
             using var process=Process.Start(start)??throw new IOException("서비스 설치 프로그램 시작 실패");
             await process.WaitForExitAsync();
             if(process.ExitCode!=0)throw new IOException($"서비스 설치 결과 {process.ExitCode}. {Path.Combine(Root,"install-result.txt")}");
-            log.Write("로그인 전 실행 서비스 설치·업데이트 완료");
             }
             finally{File.Delete(setup);}
         }

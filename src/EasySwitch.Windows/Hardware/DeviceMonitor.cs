@@ -27,6 +27,9 @@ internal sealed class DeviceMonitor : IAsyncDisposable
     private readonly ConcurrentDictionary<(string Key, int Index), HostDevice> _devices = new();
     private readonly ConcurrentDictionary<string, HidInterface> _descriptions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<(string, int), EarlySignalGate<byte[]>> _early = new();
+    private readonly ConcurrentDictionary<(string, int), byte> _earlyAnnounced = new();
+    private readonly ConcurrentDictionary<(string, int), int> _earlyOverflow = new();
+    private readonly ConcurrentDictionary<string, byte> _shortReportAnnounced = new();
     private readonly CancellationTokenSource _stop = new();
     private readonly ConcurrentDictionary<Task, byte> _operations = new();
     private readonly Dictionary<string, DateTimeOffset> _openRetry = [];
@@ -101,7 +104,7 @@ internal sealed class DeviceMonitor : IAsyncDisposable
             var old=_connections.ToArray();
             foreach(var pair in old)_connections.TryRemove(pair.Key,out _);
             foreach(var device in _devices.Values)device.MarkLinkClosed();
-            _devices.Clear();_initialized.Clear();_early.Clear();_descriptions.Clear();_openRetry.Clear();
+            _devices.Clear();_initialized.Clear();_early.Clear();_earlyAnnounced.Clear();_earlyOverflow.Clear();_shortReportAnnounced.Clear();_descriptions.Clear();_openRetry.Clear();
             foreach(var pair in old)await pair.Value.DisposeAsync().ConfigureAwait(false);
             log.Write("전원 상태 변경: 이전 HID 통로와 보관 신호를 정리하고 기기를 다시 검색함");
             Changed?.Invoke();
@@ -195,9 +198,12 @@ internal sealed class DeviceMonitor : IAsyncDisposable
         if(_connections.TryGetValue(connection.Key,out var active) && !ReferenceEquals(active,connection))return;
         foreach (var key in _early.Keys.Where(k => k.Item1 == connection.Key).ToArray())
         {
+            _earlyAnnounced.TryRemove(key, out _);
+            _earlyOverflow.TryRemove(key, out var overflow);
             if (_early.TryRemove(key, out var queue) && !queue.IsEmpty)
-                log.Write($"[{connection.Name}] 보관 이벤트 폐기: feature 조회 전에 통로가 닫혀 새 연결에서 재생하지 않음");
+                log.Write($"[{connection.Name}] 보관 이벤트 폐기: feature 조회 전에 통로가 닫혀 새 연결에서 재생하지 않음 (보관 한도 초과 누적 {overflow}개)");
         }
+        _shortReportAnnounced.TryRemove(connection.Key, out _);
         foreach (var device in _devices.Values.Where(device=>device.UsesTransport(connection))) device.MarkLinkClosed();
     }
 
@@ -217,32 +223,43 @@ internal sealed class DeviceMonitor : IAsyncDisposable
     {
         if(Volatile.Read(ref _suspended)!=0 || Volatile.Read(ref _recoveryRequested)!=0)return;
         if (!_connections.TryGetValue(connection.Key, out var active) || !ReferenceEquals(active, connection)) return;
-        if (raw.Length < 7) return;
+        if (raw.Length < 7)
+        {
+            if (_shortReportAnnounced.TryAdd(connection.Key, 0)) log.Write($"[{connection.Name}] 짧은 HID++ 리포트 폐기: {raw.Length}바이트. 같은 통로의 반복은 기록하지 않음");
+            return;
+        }
         if (connection.IsReceiver && ReceiverMessages.ParseDeviceConnection(raw) is { } notice)
         {
             if (_devices.TryGetValue((connection.Key, notice.DeviceIndex), out var noticed))
             {
-                log.Write($"[{noticed.Name}] 0x41 연결 알림: {Hex.Format(raw)}. 링크 {(notice.LinkEstablishedAssumed ? "도착" : "이탈")}, 현재 채널은 실제 응답으로 확인함");
+                log.Write($"[{noticed.Name}] 0x41 알림: 이 PC 로컬 링크 {(notice.LinkEstablishedAssumed ? "도착" : "이탈")} 추정, 슬롯 {notice.DeviceIndex}, 무선 PID 0x{notice.WirelessProductId:X4}. 현재 채널은 별도 응답으로 확인함");
                 noticed.ApplyConnectionNotice(notice);
                 if (notice.LinkEstablishedAssumed) Track(noticed.RefreshAsync(_stop.Token,true));
             }
+            else log.Write($"[{connection.Name}] 0x41 알림 처리 생략: 슬롯 {notice.DeviceIndex}의 등록 기기 경로가 없음");
             return;
         }
         if (connection.IsReceiver && raw[2] == HidppConstants.Hidpp10DeviceDisconnection)
         {
             if (_devices.TryGetValue((connection.Key, (int)raw[1]), out var unpaired)) unpaired.InvalidatePairing();
-            if (_early.TryRemove((connection.Key, raw[1]), out var removed) && !removed.IsEmpty)
-                log.Write("등록 해제로 보관 중인 이전 기기의 이벤트를 폐기함");
+            else log.Write($"[{connection.Name}] 등록 해제 알림: 슬롯 {raw[1]}의 등록 기기 경로가 없음");
+            var key=(connection.Key,(int)raw[1]);
+            _earlyAnnounced.TryRemove(key,out _);
+            _earlyOverflow.TryRemove(key,out var overflow);
+            if (_early.TryRemove(key, out var removed) && !removed.IsEmpty)
+                log.Write($"등록 해제로 보관 중인 이전 기기의 이벤트를 폐기함 (보관 한도 초과 누적 {overflow}개)");
             return;
         }
         if (raw[3] != 0 || HidppFrameParser.IsError(raw)) return;
         if (!_devices.TryGetValue((connection.Key, (int)raw[1]), out var device)) return;
         if (device.Restoring || device.Info.FeatureIndex == 0 || device.CurrentHost is null)
         {
-            var queue = _early.GetOrAdd((connection.Key, raw[1]), _ => new());
-            if (queue.Hold(raw, device.ConnectionGeneration))
-                log.Write($"[{device.Name}] 초기 이벤트 보관 한도로 가장 오래된 프레임을 폐기함");
-            log.Write($"[{device.Name}] {(device.Restoring?"기기 복원 검증":"feature 조회")} 중 기기 이벤트 보관");
+            var key=(connection.Key,(int)raw[1]);
+            var queue = _early.GetOrAdd(key, _ => new());
+            if (_earlyAnnounced.TryAdd(key, 0))
+                log.Write($"[{device.Name}] {(device.Restoring?"기기 복원 검증":"feature 조회")} 중 초기 이벤트 보관 시작");
+            if (queue.Hold(raw, device.ConnectionGeneration) && _earlyOverflow.AddOrUpdate(key,1,(_,count)=>count+1)==1)
+                log.Write($"[{device.Name}] 초기 이벤트 보관 한도로 가장 오래된 프레임을 폐기함. 추가 폐기 수는 보관 종료 시 기록함");
             return;
         }
         DecodeEvent(device, raw);
@@ -255,6 +272,9 @@ internal sealed class DeviceMonitor : IAsyncDisposable
         {
             if (!_devices.TryGetValue(key, out var owner) || !ReferenceEquals(owner, device)) continue;
             if (!_early.TryRemove(key, out var queue)) continue;
+            _earlyAnnounced.TryRemove(key,out _);
+            _earlyOverflow.TryRemove(key,out var overflow);
+            if (overflow>1) log.Write($"[{device.Name}] 초기 이벤트 보관 한도 초과로 추가 {overflow-1}개 폐기");
             var held = queue.Open(device.ConnectionGeneration);
             if (held.Discarded > 0) log.Write($"[{device.Name}] 이전 연결 또는 5초 경과 보관 이벤트 {held.Discarded}개 폐기");
             foreach (var frame in held.Frames) DecodeEvent(device, frame);
@@ -263,19 +283,26 @@ internal sealed class DeviceMonitor : IAsyncDisposable
 
     private void DecodeEvent(HostDevice device, byte[] raw)
     {
-        if (HidppFrameParser.Parse(raw) is { } frame && ChangeHostFeature.ParseHostChangeEvent(frame, device.Info.FeatureIndex) is { } target)
+        if (HidppFrameParser.Parse(raw) is not { } frame)
         {
-            if (target == device.CurrentHost)
-            {
-                log.Write($"[{device.Name}] 도착 채널 {target + 1} 알림: 출발로 처리하지 않음");
-                return;
-            }
-            device.NoteDepartureSignal();
-            log.Write($"[{device.Name}] 전환 신호: 채널 {target + 1}, params[0]=0x{raw[4]:X2}");
-            HostChanged?.Invoke(device, target);
-            device.MarkOffline();
+            log.Write($"[{device.Name}] 기기 이벤트 폐기: HID++ 프레임 형식 오류");
+            return;
         }
-        else log.Write($"[{device.Name}] 전환 명령 생략: 채널 전환 이벤트에 해당하지 않음");
+        if (frame.FeatureIndex != device.Info.FeatureIndex) return;
+        if (ChangeHostFeature.ParseHostChangeEvent(frame, device.Info.FeatureIndex) is not { } target)
+        {
+            log.Write($"[{device.Name}] 전환 신호 폐기: 목적지 채널 {frame.Param(1)}이 유효 범위 0~2 밖임");
+            return;
+        }
+        if (target == device.CurrentHost)
+        {
+            log.Write($"[{device.Name}] 도착 채널 {target + 1} 알림: 출발로 처리하지 않음");
+            return;
+        }
+        device.NoteDepartureSignal();
+        log.Write($"[{device.Name}] 전환 신호: 채널 {target + 1}, params[0]=0x{raw[4]:X2}");
+        HostChanged?.Invoke(device, target);
+        device.MarkOffline();
     }
 
     public async ValueTask DisposeAsync()

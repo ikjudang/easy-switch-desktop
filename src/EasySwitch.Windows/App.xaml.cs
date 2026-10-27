@@ -16,6 +16,9 @@ public partial class App : Application
     private AppLog? _log;
     private MainViewModel? _viewModel;
     private MainWindow? _window;
+    private MainWindow.ViewState? _mainViewState;
+    private Rect? _mainBounds;
+    private int _mainGeneration;
     private FloatingRuntime? _floating;
     private NoticePresenter? _notices;
     private Forms.NotifyIcon? _tray;
@@ -101,7 +104,7 @@ public partial class App : Application
             try
             {
                 if (!_instance.Enter(AppVersion.Current,
-                    () => Dispatcher.BeginInvoke(() => _window?.ShowFromTray()),
+                    () => Dispatcher.BeginInvoke(ShowMainWindow),
                     () => Dispatcher.BeginInvoke(() => { if(_ready)RequestExit();else _exitAfterStartup=true; })))
                 { Shutdown(); return; }
             }
@@ -118,9 +121,6 @@ public partial class App : Application
             var settings = await settingsTask;
             await splash.AdvanceAsync(.22);
             _log = await logTask;startup.Mark("LOCAL");
-            _log.Write($"EasySwitch Windows v{AppVersion.Label} 시작 · HID++ software id 0x09");
-            _log.WriteCode($"{SwitchCode.Prefix} APP GFX G{System.Windows.Media.RenderCapability.Tier>>16}");
-            if(_instance is not null)foreach(var message in _instance.Messages)_log.Write(message);
             if (settings.LoadError is { } settingsError) _log.Write($"이전 설정을 읽지 못해 기본값 사용: {settingsError}");
             try { if(settings.Value.ExportEnabled && settings.Value.ExportDirectory is { } exportDirectory)await Task.Run(()=>_log.SetExportDirectory(exportDirectory)); }
             catch (Exception error) { _log.Write($"외부 로그 폴더 열기 실패: {error.Message}. 로컬 파일은 계속 기록함"); }
@@ -143,19 +143,20 @@ public partial class App : Application
             _viewModel.Start();startup.Mark("MONITOR");
             await splash.AdvanceAsync(.55);
             _viewModel.ExitRequested += RequestExit;
-            _window = new MainWindow { DataContext = _viewModel };
-            MainWindow = _window;
-            new WindowInteropHelper(_window).EnsureHandle();startup.Mark("WINDOW");
+            var trayStart=e.Args.Contains("--tray");
+            if(!trayStart)EnsureMainWindow();
+            startup.Mark("WINDOW");
             await splash.AdvanceAsync(.70);
-            _floating = new FloatingRuntime(_viewModel, _window, _log);
+            _floating = new FloatingRuntime(_viewModel,Dispatcher,_log,ShowMainWindow);
+            _floating.SetMainWindow(_window);
             CreateTray();
             await splash.AdvanceAsync(.88);
             _ready=true;
             startup.Mark("SERVICES");
             await splash.AdvanceAsync(1);
-            if (!e.Args.Contains("--tray")){_window.ShowActivated=startupDirectory is null;_window.Show();}
+            if (!trayStart){_window!.ShowActivated=startupDirectory is null;_window.Show();}
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ContextIdle);
-            startup.Mark("READY");_log.WriteCode($"{SwitchCode.Prefix} APP UI E{startup.Elapsed}");
+            startup.Mark("READY");
             if(_exitAfterStartup)RequestExit();
             if(startupDirectory is not null){startup.Save(startupDirectory);RequestExit();}
         }
@@ -165,7 +166,7 @@ public partial class App : Application
             MessageBox.Show($"앱을 시작하지 못했어.\n{error.Message}", "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
-        finally { splash.Close(); }
+        finally { splash.Close(); if(_window is null && ReferenceEquals(MainWindow,splash))MainWindow=null; }
     }
 
     private void CreateTray()
@@ -207,14 +208,50 @@ public partial class App : Application
         catch(Exception error){File.WriteAllText(Path.Combine(directory,$"error-{Environment.ProcessId}.txt"),error.ToString());Shutdown(1);}
     }
 
+    private MainWindow EnsureMainWindow()
+    {
+        if(_window is not null)return _window;
+        var window=new MainWindow();
+        window.RestoreViewState(_mainViewState);
+        if(_mainBounds is { } bounds && !bounds.IsEmpty)
+        {
+            window.WindowStartupLocation=WindowStartupLocation.Manual;
+            window.Left=bounds.Left;window.Top=bounds.Top;window.Width=bounds.Width;window.Height=bounds.Height;
+        }
+        var generation=++_mainGeneration;
+        window.CloseToTrayRequested+=()=>Dispatcher.BeginInvoke(()=>ReleaseMainWindow(generation));
+        window.DataContext=_viewModel;_window=window;MainWindow=window;
+        new WindowInteropHelper(window).EnsureHandle();
+        _floating?.SetMainWindow(window);
+        return window;
+    }
+    private void ShowMainWindow()
+    {
+        if(_exiting || _viewModel is null)return;
+        EnsureMainWindow().ShowFromTray();
+    }
+    private void ReleaseMainWindow(int generation)
+    {
+        if(_exiting || generation!=_mainGeneration || _window is not {} window)return;
+        var bounds=window.RestoreBounds;
+        if(!bounds.IsEmpty && bounds.Width>0 && bounds.Height>0)_mainBounds=bounds;
+        _mainViewState=window.CaptureViewState();
+        _floating?.SetMainWindow(null);
+        System.Windows.Input.Keyboard.ClearFocus();System.Windows.Input.FocusManager.SetFocusedElement(window,null);
+        window.DataContext=null;window.AllowClose=true;
+        _window=null;MainWindow=null;window.Close();
+    }
     private void OpenTrayMenu()
     {
-        if (_viewModel is null || _window is null) return;
-        var menu = BuildTrayMenu(_viewModel,_window.ShowFromTray,RequestExit);
-        // A foreground owner lets Windows dismiss this menu when the user clicks elsewhere.
-        SetForegroundWindow(new WindowInteropHelper(_window).Handle);
-        menu.PlacementTarget = _window;
-        menu.IsOpen = true;
+        if (_viewModel is null) return;
+        var menu=BuildTrayMenu(_viewModel,ShowMainWindow,RequestExit);
+        if(_window is not null)
+        {
+            // A foreground owner lets Windows dismiss this menu when the user clicks elsewhere.
+            SetForegroundWindow(new WindowInteropHelper(_window).Handle);
+            menu.PlacementTarget=_window;
+        }
+        menu.IsOpen=true;
     }
 
     internal static ContextMenu BuildTrayMenu(MainViewModel viewModel,Action show,Action exit)
@@ -260,7 +297,6 @@ public partial class App : Application
             if(floating is not null)await floating.DisposeAsync();
             if(notices is not null)await notices.DisposeAsync();
             if (_viewModel is not null) await _viewModel.DisposeAsync();
-            _log?.Write("Easy Switch 정상 종료");
         }
         catch (Exception error) { _log?.Write($"앱 종료 처리 오류: {error}"); }
         finally { if (_window is not null) _window.AllowClose = true; Shutdown(); }

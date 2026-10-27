@@ -6,7 +6,7 @@ public sealed record LogEntry(DateTimeOffset At, string Message)
 {
     public string Time => At.ToString("HH:mm:ss.fff");
     public string Line => $"{At:yyyy-MM-dd HH:mm:ss.fff zzz}  {Message}";
-    public bool IsProtocolTrace => Message.StartsWith('[') && (Message.Contains("] TX ",StringComparison.Ordinal) || Message.Contains("] RX ",StringComparison.Ordinal) || Message.Contains("] RX 응답 ",StringComparison.Ordinal) || Message.Contains("] 수신기 미확인 슬롯 조회:",StringComparison.Ordinal) || Message.Contains("] 조회 시간 초과:",StringComparison.Ordinal));
+    public bool IsProtocolTrace => Message.StartsWith('[') && (Message.Contains("] TX ",StringComparison.Ordinal) || Message.Contains("] RX ",StringComparison.Ordinal) || Message.Contains("] RX 응답 ",StringComparison.Ordinal));
 }
 public sealed record CodeLogEntry(DateTimeOffset At,string Code)
 {

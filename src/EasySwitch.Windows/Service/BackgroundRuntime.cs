@@ -34,8 +34,7 @@ internal sealed class BackgroundRuntime:IAsyncDisposable
             if(_fixture)_vm.UsePreviewDevices([]);
             _vm.NoticeRequested+=n=>_journal.Add(n,false);_vm.ConnectionNoticeRequested+=n=>_journal.Add(n,true);
             _vm.KeyboardSwitchObserved+=_journal.AddKeyboardSwitch;
-            _log.Write($"Windows 서비스 {AppVersion.Label} 시작: 로그인 상태와 별개로 기기 감시");
-            _log.WriteCode($"{SwitchCode.Prefix} SVC START");_vm.Start();
+            _vm.Start();
             _health=new DispatcherTimer{Interval=TimeSpan.FromSeconds(2)};
             _health.Tick+=(_,_)=>{var now=Environment.TickCount64;var gap=now-_lastHealth;_lastHealth=now;if(!_suspended && gap>10000)Power(false,"실행 공백 감지");};_health.Start();
             _server=ServeAsync();

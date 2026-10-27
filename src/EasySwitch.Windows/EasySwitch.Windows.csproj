@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>EasySwitch</AssemblyName>
     <RootNamespace>EasySwitch.Windows</RootNamespace>
-    <Version>0.2.39</Version>
+    <Version>0.2.40</Version>
     <ApplicationIcon>Assets/EasySwitch.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- WPF owns startup/DPI; WinForms is used only for NotifyIcon. No WinForms Application.Run exists. -->

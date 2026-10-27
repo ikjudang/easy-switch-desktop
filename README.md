@@ -6,7 +6,7 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 
 ## 다운로드
 
-- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.39/EasySwitch-0.2.39-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.39/EasySwitch-0.2.39-fast-win-x64.zip)
+- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.40/EasySwitch-0.2.40-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.40/EasySwitch-0.2.40-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -61,7 +61,7 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 
 ## 로그
 
-**설정 → 연결 로그**에서 동작 기록을 확인하고, **송수신 원문 보기**와 **코드 보기**로 표시 방식을 바꿀 수 있습니다. 각 화면의 **내보내기**는 사용자가 고른 파일로 기록을 저장합니다.
+**설정 → 연결 로그**에서 연결·전환 기록을 확인하고, **코드 보기**로 상태 코드를 볼 수 있습니다. 각 화면의 **내보내기**는 사용자가 고른 파일로 기록을 저장합니다.
 
 **로그 자동 저장**은 사용자가 선택한 폴더에 추가로 기록하는 기능입니다. 이 설정을 꺼도 로컬 기록은 유지됩니다. 앱은 로그를 서버에 자동으로 업로드하지 않습니다.
 
