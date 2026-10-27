@@ -14,6 +14,7 @@ protocol HIDWorkerSession: AnyObject, Sendable {
 struct HIDWorkerConfiguration: Sendable {
     let physicalID: String?
     let enumerationOnly: Bool
+    let traceFrames: Bool
     let onEvent: @Sendable (HIDEvent) -> Void
     let started: @Sendable (Result<Void, Error>) -> Void
 }
@@ -24,13 +25,16 @@ struct HIDWorkerConfiguration: Sendable {
 public final class HIDMonitor: @unchecked Sendable {
     private let lock = NSLock()
     private let factory: @Sendable (HIDWorkerConfiguration) -> any HIDWorkerSession
+    private let traceFrames: Bool
     private var worker: (any HIDWorkerSession)?
     private var deviceWorkers: [String: any HIDWorkerSession] = [:]
     private var deviceOwners: [String: String] = [:]
     private var generation: UInt64 = 0
 
-    public init() { factory = { HIDWorker(configuration: $0) } }
-    init(factory: @escaping @Sendable (HIDWorkerConfiguration) -> any HIDWorkerSession) { self.factory = factory }
+    public init(traceFrames: Bool = false) { self.traceFrames = traceFrames; factory = { HIDWorker(configuration: $0) } }
+    init(traceFrames: Bool = false, factory: @escaping @Sendable (HIDWorkerConfiguration) -> any HIDWorkerSession) {
+        self.traceFrames = traceFrames; self.factory = factory
+    }
 
     deinit {
         worker?.requestStop()
@@ -60,7 +64,7 @@ public final class HIDMonitor: @unchecked Sendable {
                 guard worker == nil else { return nil }
                 generation &+= 1
                 let token = generation
-                let configuration = HIDWorkerConfiguration(physicalID: nil, enumerationOnly: true,
+                let configuration = HIDWorkerConfiguration(physicalID: nil, enumerationOnly: true, traceFrames: traceFrames,
                     onEvent: { [weak self] event in self?.discovered(event, generation: token, onEvent: onEvent) },
                     started: { continuation.resume(with: $0) })
                 let created = factory(configuration)
@@ -114,7 +118,7 @@ public final class HIDMonitor: @unchecked Sendable {
                 guard worker != nil, generation == token else { return nil }
                 deviceOwners[descriptor.id] = descriptor.physicalID
                 guard descriptor.isHidppCandidate, deviceWorkers[descriptor.physicalID] == nil else { return nil }
-                let configuration = HIDWorkerConfiguration(physicalID: descriptor.physicalID, enumerationOnly: false,
+                let configuration = HIDWorkerConfiguration(physicalID: descriptor.physicalID, enumerationOnly: false, traceFrames: traceFrames,
                     onEvent: { [weak self] event in self?.received(event, generation: token, onEvent: onEvent) },
                     started: { result in
                         if case .failure(let error) = result { onEvent(.diagnostic("기기별 HID 감시 시작 실패: \(error)")) }
@@ -194,10 +198,12 @@ private final class HIDWorker: HIDWorkerSession, @unchecked Sendable {
     private let started: @Sendable (Result<Void, Error>) -> Void
     private let physicalID: String?
     private let enumerationOnly: Bool
+    private let traceFrames: Bool
 
     init(configuration: HIDWorkerConfiguration) {
         onEvent = configuration.onEvent; started = configuration.started
         physicalID = configuration.physicalID; enumerationOnly = configuration.enumerationOnly
+        traceFrames = configuration.traceFrames
     }
 
     func start() {
@@ -348,7 +354,7 @@ private final class HIDWorker: HIDWorkerSession, @unchecked Sendable {
         guard self.physicalID == nil || self.physicalID == physicalID else { return }
         let candidate = HIDReportNormalizer.isHidppCandidate(vendorID: vendor, usagePairs: pairs)
         let traceToken: String?
-        if candidate && !enumerationOnly { nextTraceToken &+= 1; traceToken = "C\(nextTraceToken)" }
+        if candidate && !enumerationOnly && traceFrames { nextTraceToken &+= 1; traceToken = "C\(nextTraceToken)" }
         else { traceToken = nil }
         let traceRole = pairs.contains { $0.page == 0xFF00 && ($0.usage == 1 || $0.usage == 2) } ? "receiver"
             : pairs.contains { $0.page == 1 && $0.usage == 6 } ? "keyboard"
@@ -385,10 +391,10 @@ private final class HIDWorker: HIDWorkerSession, @unchecked Sendable {
                 let arrivedAt = HIDWorker.monotonicMS
                 // Only vendor reports reach this point. Read at most four header bytes directly;
                 // tracing never copies another payload or observes ordinary input reports.
-                let header = result == kIOReturnSuccess
+                let header = worker.traceFrames && result == kIOReturnSuccess
                     ? HIDWorker.vendorHeader(bytes, reportID: reportID, length: length, capacity: entry.bufferSize)
                     : "unavailable"
-                let fields = "rid=\(reportID) len=\(length) header=\(header) result=\(HIDWorker.resultCode(result))"
+                let fields = worker.traceFrames ? "rid=\(reportID) len=\(length) header=\(header) result=\(HIDWorker.resultCode(result))" : ""
                 guard !worker.shouldStop else {
                     worker.trace("VENDOR_DROP", entry: entry, at: arrivedAt, details: "reason=stopping \(fields)")
                     return
@@ -446,13 +452,14 @@ private final class HIDWorker: HIDWorkerSession, @unchecked Sendable {
         let prefix = includedID ? "" : String(format: "%02X", reportID)
         return prefix + (0..<count).map { String(format: "%02X", bytes[$0]) }.joined()
     }
-    private func trace(_ stage: String, entry: HIDEntry, at: Double, details: String = "") {
-        trace(stage, token: entry.traceToken, role: entry.traceRole, at: at, details: details)
+    private func trace(_ stage: String, entry: HIDEntry, at: Double, details: @autoclosure () -> String = "") {
+        guard traceFrames else { return }
+        trace(stage, token: entry.traceToken, role: entry.traceRole, at: at, details: details())
     }
-    private func trace(_ stage: String, token: String?, role: String, at: Double, details: String = "") {
-        guard let token else { return }
+    private func trace(_ stage: String, token: String?, role: String, at: Double, details: @autoclosure () -> String = "") {
+        guard traceFrames, let token else { return }
         traceSequence &+= 1
-        onEvent(.diagnostic("HIDTRACE run=\(traceRun) seq=\(traceSequence) connection=\(token) role=\(role) stage=\(stage) nativeMonoMs=\(Self.ms(at)) \(details)"))
+        onEvent(.diagnostic("HIDTRACE run=\(traceRun) seq=\(traceSequence) connection=\(token) role=\(role) stage=\(stage) nativeMonoMs=\(Self.ms(at)) \(details())"))
     }
 
     private func tearDown(loop: CFRunLoop) {

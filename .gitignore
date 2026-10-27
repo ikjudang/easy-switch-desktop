@@ -550,3 +550,6 @@ src/EasySwitch.macOS/.swiftpm/
 /src/EasySwitch.Windows/PreviewRenderer*.cs
 /src/EasySwitch.Windows/Floating/FloatingBenchmark.cs
 !/build/EasySwitch-*.zip
+
+# Startup animation implementation remains private.
+/src/EasySwitch.macOS/Sources/EasySwitchApp/StartupSplash.swift

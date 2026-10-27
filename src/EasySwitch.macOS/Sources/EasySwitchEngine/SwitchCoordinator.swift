@@ -21,6 +21,17 @@ public protocol DeviceSwitching: Sendable {
 
 public enum SwitchOutcome: String, Sendable {
     case alreadyCurrent, targetReported, localLinkClosed, unverified, stillOnSource, cancelled, failed
+
+    var evidence: String {
+        switch self {
+        case .alreadyCurrent: "previous_local_channel_report"
+        case .targetReported: "device_target_channel_report"
+        case .localLinkClosed: "local_path_unavailable"
+        case .stillOnSource: "device_source_channel_report"
+        case .cancelled: "request_cancelled_or_generation_changed"
+        case .unverified, .failed: "insufficient"
+        }
+    }
 }
 
 /// Latest destination wins; an in-flight OS write must finish before its successor starts.
@@ -96,7 +107,7 @@ public actor SwitchCoordinator {
         report(token, stage: "END", outcome: outcome)
         await gate.release(id)
         let elapsed = start.duration(to: clock.now)
-        log("SWITCH_END | device=\(id) | target=\(target + 1) | result=\(outcome.rawValue) | total=\(elapsed)")
+        log("SWITCH_END | device=\(id) | target=\(target + 1) | result=\(outcome.rawValue) | evidence=\(outcome.evidence) | osWrites=\(metrics[token]?.writes ?? 0) | reason=\(metrics[token]?.reason ?? "NA") | remoteArrival=unobserved | total=\(elapsed)")
         return outcome
     }
 
@@ -136,7 +147,7 @@ public actor SwitchCoordinator {
                 metrics[token]?.write += writeMS; metrics[token]?.writes += 1
                 report(token, stage: "WRT", duration: writeMS)
                 writes += 1
-                log("SWITCH_WRITE | device=\(id) | target=\(target + 1) | attempt=\(attempt) | writes=\(writes) | write=\(writeAt.duration(to: .now)) | reason=\(reason)")
+                log("SWITCH_WRITE | device=\(id) | target=\(target + 1) | attempt=\(attempt) | writes=\(writes) | evidence=os_write_completed | remoteArrival=unobserved | write=\(writeAt.duration(to: .now)) | reason=\(reason)")
                 try Task.checkCancellation()
                 // Observe departure during the delay instead of treating a write as completion.
                 var waited = 0

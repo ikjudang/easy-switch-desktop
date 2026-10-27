@@ -6,7 +6,8 @@ final class AppWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
 
     init(model: AppModel, initialPage: AppPage = .home, storesFrame: Bool = true,
-         settingsExpanded: Bool = false, exportExpanded: Bool = false) {
+         settingsExpanded: Bool = false, toastExpanded: Bool = false, exportExpanded: Bool = false,
+         viewState: MainWindowViewState? = nil) {
         let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 1140, height: 720),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
@@ -16,7 +17,8 @@ final class AppWindowController: NSWindowController, NSWindowDelegate {
         window.appearance = NSAppearance(named: .darkAqua)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: AppRootView(model: model, initialPage: initialPage,
-                                                               settingsExpanded: settingsExpanded, exportExpanded: exportExpanded))
+                                                               settingsExpanded: settingsExpanded, toastExpanded: toastExpanded, exportExpanded: exportExpanded,
+                                                               viewState: viewState))
         window.center()
         if storesFrame { window.setFrameAutosaveName("EasySwitchMainWindow") }
         super.init(window: window)

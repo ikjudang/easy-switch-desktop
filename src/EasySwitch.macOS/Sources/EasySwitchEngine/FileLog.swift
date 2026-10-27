@@ -1,10 +1,12 @@
 import Foundation
+import Darwin
 
 /// Owns synchronous file I/O on a private queue, never the AppKit thread.
 public final class FileLog: @unchecked Sendable {
     public let directory: URL
     public let fileURL: URL
     public let codeURL: URL
+    public let traceFrames: Bool
     private let queue = DispatchQueue(label: "EasySwitch.file-log")
     private let formatter = ISO8601DateFormatter()
     private let codeFormatter = DateFormatter()
@@ -16,7 +18,8 @@ public final class FileLog: @unchecked Sendable {
     private var lines: [String] = []
     private var failure: String?
 
-    public init(directory: URL? = nil) throws {
+    public init(directory: URL? = nil, traceFrames: Bool = false) throws {
+        self.traceFrames = traceFrames
         self.directory = directory ?? FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Logs/EasySwitch", isDirectory: true)
         try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
@@ -51,6 +54,12 @@ public final class FileLog: @unchecked Sendable {
         }
     }
 
+    /// Diagnostic frames are opt-in. Do not format/copy their payloads in normal operation.
+    public func writeTrace(_ message: @autoclosure () -> String) {
+        guard traceFrames else { return }
+        write(message())
+    }
+
     public func writeCode(_ message: String) {
         queue.async { [self] in
             let line = "\(codeFormatter.string(from: Date()))|\(message)"
@@ -72,7 +81,7 @@ public final class FileLog: @unchecked Sendable {
                         for source in [fileURL] {
                             let destination = directory.appendingPathComponent(source.lastPathComponent)
                             guard destination.standardizedFileURL != source.standardizedFileURL else { throw CocoaError(.fileWriteInvalidFileName) }
-                            try Data(contentsOf: source).write(to: destination, options: .atomic)
+                            try copyAtomically(source, to: destination)
                             let sink = try FileHandle(forWritingTo: destination)
                             try sink.seekToEnd()
                             mirror = sink
@@ -112,11 +121,22 @@ public final class FileLog: @unchecked Sendable {
             queue.async { [self] in
                 do {
                     // The save panel owns overwrite confirmation; copying also preserves the live log.
-                    let data = try Data(contentsOf: codes ? codeURL : fileURL)
-                    try data.write(to: destination, options: .atomic)
+                    try copyAtomically(codes ? codeURL : fileURL, to: destination)
                     continuation.resume()
                 } catch { continuation.resume(throwing: error) }
             }
+        }
+    }
+
+    /// copyfile-backed copying bounds the userspace buffer regardless of the log's size.
+    /// Stage beside the destination, then atomically replace it; a failed copy keeps the old file.
+    private func copyAtomically(_ source: URL, to destination: URL) throws {
+        guard source.standardizedFileURL != destination.standardizedFileURL else { throw CocoaError(.fileWriteInvalidFileName) }
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".easyswitch-log-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try FileManager.default.copyItem(at: source, to: temporary)
+        guard rename(temporary.path, destination.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 

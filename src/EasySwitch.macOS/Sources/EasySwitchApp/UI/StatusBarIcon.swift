@@ -3,7 +3,6 @@ import AppKit
 @MainActor
 enum StatusBarIcon {
     static func makeImage(size: CGFloat = 18) -> NSImage {
-        // System menu bar icon using the shared EasySwitch artwork.
         // Match the launcher's original 332:152 foreground at 22 units wide
         // inside the 24 × 24 canvas, including its 16-unit strokes and filled arrows.
         let image = NSImage(size: NSSize(width: size, height: size), flipped: true) { bounds in

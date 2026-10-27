@@ -42,6 +42,15 @@ struct AppGlyph: View {
             case "clock":
                 path.addEllipse(in: .init(x: 4, y: 4, width: 16, height: 16))
                 line([.init(x: 12, y: 7.5), .init(x: 12, y: 12), .init(x: 15.2, y: 13.8)])
+            case "bell":
+                path.move(to: .init(x: 18, y: 8))
+                path.addArc(center: .init(x: 12, y: 8), radius: 6,
+                            startAngle: .degrees(0), endAngle: .degrees(180), clockwise: true)
+                path.addCurve(to: .init(x: 3, y: 16), control1: .init(x: 6, y: 15), control2: .init(x: 3, y: 16))
+                path.addLine(to: .init(x: 21, y: 16))
+                path.addCurve(to: .init(x: 18, y: 8), control1: .init(x: 21, y: 16), control2: .init(x: 18, y: 15))
+                path.closeSubpath()
+                line([.init(x: 10, y: 20), .init(x: 14, y: 20)])
             case "folder":
                 line([.init(x: 3, y: 7), .init(x: 9.5, y: 7), .init(x: 11.5, y: 9.5),
                       .init(x: 21, y: 9.5), .init(x: 21, y: 19), .init(x: 3, y: 19)], close: true)
@@ -129,9 +138,10 @@ struct AppBrandMark: View {
 struct FloatingSettingsPreview: View {
     var size: CGFloat = 40
     var active = true
+    @StateObject private var artwork = FloatingPreviewArtwork()
 
     var body: some View {
-        Image(decorative: active ? FloatingArtwork.image(-1) : Self.inactiveArtwork, scale: 6)
+        Image(decorative: active ? artwork.active : artwork.inactive, scale: artwork.rasterScale)
             .resizable()
             .interpolation(.high)
             .frame(width: Self.paintSize(for: size), height: Self.paintSize(for: size))
@@ -156,8 +166,7 @@ struct FloatingSettingsPreview: View {
         return SIMD4(channel(32, 139), channel(38, 147), channel(45, 157), alpha)
     }
 
-    private static let inactiveArtwork: CGImage = {
-        let source = FloatingArtwork.image(-1)
+    fileprivate static func inactiveArtwork(from source: CGImage) -> CGImage {
         let rowBytes = source.width * 4
         let context = CGContext(data: nil, width: source.width, height: source.height,
                                 bitsPerComponent: 8, bytesPerRow: rowBytes, space: CGColorSpaceCreateDeviceRGB(),
@@ -172,5 +181,21 @@ struct FloatingSettingsPreview: View {
             // Keep the original alpha byte; filtering must not change the silhouette.
         }
         return context.makeImage()!
-    }()
+    }
+}
+
+/// A settings view owns these pixels; changing model values does not redraw the bitmaps.
+@MainActor
+private final class FloatingPreviewArtwork: ObservableObject {
+    let rasterScale: CGFloat
+    let active: CGImage
+    let inactive: CGImage
+
+    init() {
+        let backing = NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
+        rasterScale = min(6, max(2, ceil(backing)))
+        let cache = FloatingArtwork.ImageCache(rasterScale: rasterScale)
+        active = cache.image(-1)
+        inactive = FloatingSettingsPreview.inactiveArtwork(from: active)
+    }
 }

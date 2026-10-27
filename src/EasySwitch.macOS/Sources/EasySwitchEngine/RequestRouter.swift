@@ -11,8 +11,20 @@ public protocol HIDDriving: Sendable {
 
 extension HIDMonitor: HIDDriving {}
 
-public enum EngineError: Error, Sendable {
+public enum EngineError: Error, Sendable, CustomStringConvertible {
     case timeout, disconnected, unsupported, invalidResponse, protocolError([UInt8])
+    public var description: String {
+        switch self {
+        case .timeout: "timeout"
+        case .disconnected: "disconnected"
+        case .unsupported: "unsupported"
+        case .invalidResponse: "invalidResponse"
+        case .protocolError(let bytes):
+            if let info = HidppParser.parseError(bytes) {
+                "protocolError(version=\(info.protocolVersion), feature=\(info.failedFeatureIndex), function=\(info.funcSwByte), code=\(info.errorCode))"
+            } else { "protocolError(unrecognized response)" }
+        }
+    }
 }
 
 actor AsyncKeyGate {
@@ -92,7 +104,7 @@ public actor RequestRouter {
             pending[route] = Pending(id: id, bytes: bytes, reply: reply, timeout: timeout)
             do {
                 try Task.checkCancellation()
-                log.write("TX \(deviceID) \(Self.hex(bytes))")
+                log.writeTrace("TX \(deviceID) \(Self.hex(bytes))")
                 // Do not retire the slot while the synchronous OS write is still running.
                 try await driver.send(deviceID: deviceID, bytes: bytes)
                 return try await reply.value()
@@ -110,7 +122,11 @@ public actor RequestRouter {
         let route = key(deviceID, bytes[1])
         guard let request = pending[route],
               let kind = HidppMatch.classify(request: request.bytes, response: bytes) else { return }
-        if kind != .response { log.write("HID++ error layout=\(kind) \(Self.hex(bytes))") }
+        if kind != .response {
+            let error = HidppParser.parseError(bytes)
+            log.write("HID++ 요청 실패: device=\(deviceID) layout=\(kind) code=\(error.map { Int($0.errorCode) } ?? -1)")
+            log.writeTrace("HID++ error frame \(Self.hex(bytes))")
+        }
         complete(route: route, id: request.id, result: .success(bytes))
     }
 
@@ -122,7 +138,7 @@ public actor RequestRouter {
             try Task.checkCancellation()
             try await preflight?()
             try Task.checkCancellation()
-            log.write("TX \(deviceID) \(Self.hex(frame.bytes))")
+            log.writeTrace("TX \(deviceID) \(Self.hex(frame.bytes))")
             try await driver.send(deviceID: deviceID, bytes: frame.bytes)
             await gate.release(route)
         } catch { await gate.release(route); throw error }

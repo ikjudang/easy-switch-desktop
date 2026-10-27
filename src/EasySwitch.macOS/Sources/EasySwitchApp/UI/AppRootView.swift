@@ -20,12 +20,17 @@ struct AppRootView: View {
     @State private var page: AppPage
     @State private var editingChannel: Int?
     private let settingsExpanded: Bool
+    private let toastExpanded: Bool
     private let exportExpanded: Bool
+    private let viewState: MainWindowViewState?
 
-    init(model: AppModel, initialPage: AppPage = .home, settingsExpanded: Bool = false, exportExpanded: Bool = false) {
+    init(model: AppModel, initialPage: AppPage = .home, settingsExpanded: Bool = false, toastExpanded: Bool = false, exportExpanded: Bool = false,
+         viewState: MainWindowViewState? = nil) {
         self.settingsExpanded = settingsExpanded; self.exportExpanded = exportExpanded
+        self.toastExpanded = toastExpanded
         self.model = model
-        _page = State(initialValue: initialPage)
+        self.viewState = viewState
+        _page = State(initialValue: viewState?.page ?? initialPage)
     }
 
     var body: some View {
@@ -37,7 +42,7 @@ struct AppRootView: View {
                 case .home: home
                 case .devices: devices
                 case .settings, .logs:
-                    AppSettingsView(model: model, floatingExpanded: settingsExpanded, exportExpanded: exportExpanded, showLog: page == .logs)
+                    AppSettingsView(model: model, floatingExpanded: settingsExpanded, toastExpanded: toastExpanded, exportExpanded: exportExpanded, showLog: page == .logs, viewState: viewState)
                 }
             }
             .padding(.horizontal, 32)
@@ -50,8 +55,10 @@ struct AppRootView: View {
         .font(AppTheme.body())
         .preferredColorScheme(.dark)
         .frame(minWidth: 860, minHeight: 558)
-        .onReceive(model.pageRequests) { page = $0 }
+        .onReceive(model.pageRequests) { navigate(to: $0) }
     }
+
+    private func navigate(to destination: AppPage) { page = destination; viewState?.page = destination }
 
     private var rail: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -63,7 +70,7 @@ struct AppRootView: View {
             .padding(.bottom, 34)
             ForEach([AppPage.home, .devices, .settings], id: \.self) { destination in
                 let active = page == destination || (destination == .settings && page == .logs)
-                Button { page = destination } label: {
+                Button { navigate(to: destination) } label: {
                     HStack(spacing: 12) {
                         AppGlyph(kind: destination == .home ? "home" : destination == .devices ? "devices" : "gear",
                                  size: 18, tint: active ? AppTheme.PointAccent : AppTheme.Text2)
@@ -86,7 +93,7 @@ struct AppRootView: View {
                     Text(model.followEnabled ? t("마우스 따라가기 켜짐", "Mouse follow on") : t("마우스 따라가기 꺼짐", "Mouse follow off"))
                         .font(AppTheme.body(11)).foregroundStyle(AppTheme.Text2)
                 }
-                Text("Easy Switch v0.1.7")
+                Text("Easy Switch v0.1.9")
                     .font(AppTheme.mono(11)).foregroundStyle(AppTheme.GlyphDisabled)
             }
             .padding(.leading, 6)
@@ -127,7 +134,7 @@ struct AppRootView: View {
     }
 
     private var selectedDevices: [DeviceViewState] {
-        model.devices.filter { $0.id == model.selectedKeyboardID || $0.id == model.selectedMouseID }
+        model.devices.filter { model.selectedKeyboardIDs.contains($0.id) || model.selectedMouseIDs.contains($0.id) }
     }
 
     private var currentHost: Int? {
@@ -146,7 +153,7 @@ struct AppRootView: View {
                         Text(t("연결된 기기 (\(selectedDevices.filter(\.online).count)대)", "Connected devices (\(selectedDevices.filter(\.online).count))"))
                             .font(AppTheme.body(12, weight: .semibold)).foregroundStyle(AppTheme.Text2)
                         Spacer(minLength: 0)
-                        Button { page = .devices } label: {
+                        Button { navigate(to: .devices) } label: {
                             Text(t("기기 선택", "Select")).font(AppTheme.body(12, weight: .semibold))
                                 .foregroundStyle(AppTheme.PointAccent).padding(.horizontal, 8).frame(height: 28)
                         }
@@ -163,10 +170,12 @@ struct AppRootView: View {
                             }
                             .padding(18).frame(maxWidth: .infinity, alignment: .leading)
                         }
+                    } else if selectedDevices.count > 2 {
+                        ScrollView(.vertical) {
+                            VStack(spacing: 9) { ForEach(selectedDevices) { device in homeDeviceCard(device) } }
+                        }.frame(height: min(CGFloat(selectedDevices.count * 81 - 9), max(72, geometry.size.height - 40)))
                     } else {
-                        VStack(spacing: 9) {
-                            ForEach(selectedDevices) { device in homeDeviceCard(device) }
-                        }
+                        VStack(spacing: 9) { ForEach(selectedDevices) { device in homeDeviceCard(device) } }
                     }
                 }
                 .frame(width: deviceWidth)
@@ -266,7 +275,7 @@ struct AppRootView: View {
             }
             .frame(maxHeight: model.devices.isEmpty && model.needsInputMonitoring
                    ? 0 : CGFloat(max(model.devices.count, 1) * 80 + 8), alignment: .top)
-            Button { page = .home } label: {
+            Button { navigate(to: .home) } label: {
                 Text(t("\(selectedDevices.count)개 선택 완료", "Continue with \(selectedDevices.count) selected"))
                     .font(AppTheme.body(16, weight: .bold)).frame(maxWidth: .infinity).frame(height: 54)
             }
@@ -310,11 +319,10 @@ struct AppRootView: View {
     }
 
     private func selectableDeviceCard(_ device: DeviceViewState) -> some View {
-        let selected = device.id == model.selectedKeyboardID || device.id == model.selectedMouseID
+        let selected = model.selectedKeyboardIDs.contains(device.id) || model.selectedMouseIDs.contains(device.id)
         let recognized = device.kind == "키보드" || device.kind == "마우스"
         return Button {
-            if device.kind == "키보드" { model.selectKeyboard(selected ? nil : device.id) }
-            else if device.kind == "마우스" { model.selectMouse(selected ? nil : device.id) }
+            model.toggleSelection(device)
         } label: {
             AppCard(selected: selected) {
                 HStack(spacing: 20) {

@@ -32,14 +32,17 @@ private actor DiscoveryDriver: HIDDriving {
     private var ignoredHostInfo: Set<String> = []
     private var hostWrites: [[UInt8]] = []
     private var hostWriteDevices: [String] = []
+    private var receiverFlags: [UInt8]?
+    private var notificationWrites = 0
     private var metadataReplies: Bool
     private let initialReports: [(device: String, reportID: Int, bytes: [UInt8])]
     private let pauseStart: Bool
     private var startGate: CheckedContinuation<Void, Never>?
 
     init(endpoints: [HIDDeviceDescriptor], responsiveSlots: Set<UInt8> = [1], metadataReplies: Bool = true,
-         initialReports: [(device: String, reportID: Int, bytes: [UInt8])] = [], pauseStart: Bool = false) {
+         initialReports: [(device: String, reportID: Int, bytes: [UInt8])] = [], pauseStart: Bool = false, receiverFlags: [UInt8]? = nil) {
         self.endpoints = endpoints
+        self.receiverFlags = receiverFlags
         self.responsiveSlots = responsiveSlots
         self.metadataReplies = metadataReplies; self.initialReports = initialReports; self.pauseStart = pauseStart
     }
@@ -54,6 +57,11 @@ private actor DiscoveryDriver: HIDDriving {
     func snapshot() async -> [HIDDeviceDescriptor] { endpoints }
     func send(deviceID: String, bytes: [UInt8]) async throws {
         requests.append((deviceID, bytes))
+        if bytes.count >= 7, bytes[1] == 0xFF, bytes[3] == 0, [0x80, 0x81].contains(bytes[2]), receiverFlags != nil {
+            if bytes[2] == 0x80 { receiverFlags = Array(bytes[4...6]); notificationWrites += 1 }
+            let reply = [UInt8(0x10), 0xFF, bytes[2], 0] + receiverFlags!
+            onEvent?(.report(deviceID: deviceID, reportID: 0x10, bytes: reply)); return
+        }
         guard bytes.count >= 7, responsiveSlots.contains(bytes[1]), endpoints.contains(where: { $0.id == deviceID }) else { return }
         var parameters: [UInt8]
         let slot = bytes[1]
@@ -101,6 +109,8 @@ private actor DiscoveryDriver: HIDDriving {
     }
     func sendCount(slot: UInt8) -> Int { requests.filter { $0.bytes.count > 1 && $0.bytes[1] == slot }.count }
     var endpointIDsUsed: Set<String> { Set(requests.map(\.device)) }
+    var notificationWriteCount: Int { notificationWrites }
+    var notificationFlags: [UInt8]? { receiverFlags }
     var hostWriteCount: Int { hostWrites.count }
     var hostWriteEndpoints: [String] { hostWriteDevices }
     func hostWriteTargets(deviceID: String) -> [Int] {
@@ -164,12 +174,15 @@ private final class PermissionEvents: @unchecked Sendable {
     private let lock = NSLock()
     private var permissionRequests = 0
     private var events = 0
+    private var scans: [Bool] = []
     func record(_ event: EngineEvent) {
         lock.lock()
         defer { lock.unlock() }
         events += 1
         if case .inputMonitoringRequired = event { permissionRequests += 1 }
+        if case .scanning(let value) = event { scans.append(value) }
     }
+    var scanStates: [Bool] { lock.lock(); defer { lock.unlock() }; return scans }
     var requestCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -187,8 +200,8 @@ private enum NoPermissionScenario: String, CaseIterable, Sendable, CustomTestStr
     var testDescription: String { rawValue }
 }
 
-private func discoveryLog() throws -> FileLog {
-    try FileLog(directory: FileManager.default.temporaryDirectory.appendingPathComponent("easyswitch-discovery-tests-\(UUID())"))
+private func discoveryLog(traceFrames: Bool = false) throws -> FileLog {
+    try FileLog(directory: FileManager.default.temporaryDirectory.appendingPathComponent("easyswitch-discovery-tests-\(UUID())"), traceFrames: traceFrames)
 }
 
 private func discoveryEventually(attempts: Int = 1_000, _ condition: @escaping @Sendable () async -> Bool) async -> Bool {
@@ -201,6 +214,143 @@ private func discoveryEventually(attempts: Int = 1_000, _ condition: @escaping @
 
 @Suite("Discovery through real HID++ request and callback boundaries")
 struct DeviceEngineTests {
+    @Test(arguments: [false, true]) func packetModeKeepsConnectionsAndNeverRecordsOrdinaryInput(_ trace: Bool) async throws {
+        let endpoint = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [endpoint], responsiveSlots: [0xFF])
+        let log = try FileLog(directory: FileManager.default.temporaryDirectory.appendingPathComponent("easyswitch-log-mode-\(UUID())"), traceFrames: trace)
+        let engine = DeviceEngine(driver: driver, log: log)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.kind == "키보드" } })
+        await driver.injectReport(deviceID: endpoint.id, reportID: 1, bytes: Array("ORDINARY-INPUT-SENTINEL".utf8))
+        await driver.remove(endpoint.id)
+        #expect(await discoveryEventually { await engine.currentDevices().allSatisfy { !$0.online } })
+        await engine.stop()
+        let lines = await log.recentLines()
+        #expect(lines.contains { $0.contains(" TX ") } == trace)
+        #expect(lines.contains { $0.contains(" RX ") } == trace)
+        #expect(lines.contains { $0.contains("기기 연결 확인") })
+        #expect(lines.contains { $0.contains("로컬 HID 통로 종료") })
+        #expect(!lines.contains { $0.contains("ORDINARY-INPUT-SENTINEL") })
+    }
+    @Test func idleRefreshDoesNotFloodUIAndRestartPublishesInitialStateAgain() async throws {
+        let engine = DeviceEngine(driver: DiscoveryDriver(endpoints: []), log: try discoveryLog())
+        let events = PermissionEvents()
+        try await engine.start { events.record($0) }
+        for _ in 0..<100 { await engine.refresh() }
+        #expect(events.scanStates == [false])
+        await engine.stop()
+        try await engine.start { events.record($0) }
+        for _ in 0..<100 { await engine.refresh() }
+        #expect(events.scanStates == [false, false])
+        await engine.stop()
+    }
+
+    @Test func initialSignalOverflowKeepsItsReasonWithoutFrameDiagnostics() async throws {
+        let endpoint = discoveryEndpoint("fixture", physicalID: "fixture", receiver: false, reportIDs: [0x11])
+        let frame: [UInt8] = [0x11, 0xFF, 9, 0, 0, 1] + Array(repeating: 0, count: 14)
+        let driver = DiscoveryDriver(endpoints: [endpoint], responsiveSlots: [0xFF],
+            initialReports: Array(repeating: (device: "fixture", reportID: 0x11, bytes: frame), count: 17))
+        await driver.changeFeatureIndex(slot: 0xFF, index: 9)
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually {
+            await log.recentLines().contains { $0.contains("초기 신호 보관 한도 초과: 이전 신호 한 개 폐기") }
+        })
+        #expect(await log.recentLines().allSatisfy { !$0.contains(" RX ") && !$0.contains(" TX ") })
+        await engine.stop()
+    }
+
+    @Test func receiverLinkChangesRemainInBasicLogs() async throws {
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("bolt")], responsiveSlots: [2])
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.kind == "마우스" && $0.online } })
+        await driver.holdHostInfo(deviceID: "bolt")
+        await driver.injectReport(deviceID: "bolt", reportID: 0x10, bytes: [0x10, 2, 0x41, 0x10, 0x41, 0x34, 0xB0])
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("수신기 기기 연결 해제") } })
+        await driver.connectionNotice(deviceID: "bolt", slot: 2, productID: 0xB034)
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("수신기 기기 연결;") } })
+        #expect(await log.recentLines().allSatisfy { !$0.contains(" RX ") && !$0.contains(" TX ") && !$0.contains("flags=") })
+        await engine.stop()
+    }
+    @Test func manualSwitchIncludesAllSelectedDevicesAndExcludesUnselectedMouse() async throws {
+        let names = ["keyboard-a", "keyboard-b", "mouse-a", "mouse-b", "mouse-unselected"]
+        let endpoints = names.map { discoveryEndpoint($0, physicalID: $0, receiver: false, reportIDs: [0x11]) }
+        let driver = DiscoveryDriver(endpoints: endpoints, responsiveSlots: [0xFF])
+        let engine = DeviceEngine(driver: driver, log: try discoveryLog())
+        await engine.configure(keyboardIDs: ["keyboard-a#255", "keyboard-b#255"], mouseIDs: ["mouse-a#255", "mouse-b#255"], followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().filter(\.online).count == 5 })
+        let request = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { Set(await driver.hostWriteEndpoints) == Set(names.prefix(4)) })
+        #expect(await driver.hostWriteTargets(deviceID: "mouse-unselected").isEmpty)
+        await engine.stop(); await request.value
+    }
+
+    @Test func eitherSelectedKeyboardSwitchesAllSelectedMice() async throws {
+        let names = ["keyboard-a", "keyboard-b", "mouse-a", "mouse-b"]
+        let driver = DiscoveryDriver(endpoints: names.map { discoveryEndpoint($0, physicalID: $0, receiver: false, reportIDs: [0x11]) }, responsiveSlots: [0xFF])
+        let engine = DeviceEngine(driver: driver, log: try discoveryLog())
+        await engine.configure(keyboardIDs: ["keyboard-a#255", "keyboard-b#255"], mouseIDs: ["mouse-a#255", "mouse-b#255"], followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().filter(\.online).count == 4 })
+        await driver.injectReport(deviceID: "keyboard-b", reportID: 0x11, bytes: [0x11, 0xFF, 9, 0, 2, 1] + Array(repeating: 0, count: 14))
+        #expect(await discoveryEventually { Set(await driver.hostWriteEndpoints) == ["mouse-a", "mouse-b"] })
+        #expect(await driver.hostWriteTargets(deviceID: "mouse-a") == [1])
+        #expect(await driver.hostWriteTargets(deviceID: "mouse-b") == [1])
+        await engine.stop()
+    }
+
+    @Test func authenticatedRelaySwitchesOnlyMiceAndRequiresFollowEnabled() async throws {
+        let names = ["keyboard", "mouse-a", "mouse-b"]
+        let driver = DiscoveryDriver(endpoints: names.map { discoveryEndpoint($0, physicalID: $0, receiver: false, reportIDs: [0x11]) }, responsiveSlots: [0xFF])
+        let engine = DeviceEngine(driver: driver, log: try discoveryLog())
+        await engine.configure(keyboardIDs: ["keyboard#255"], mouseIDs: ["mouse-a#255", "mouse-b#255"], followEnabled: false)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().filter(\.online).count == 3 })
+        await engine.switchMice(2)
+        #expect(await driver.hostWriteCount == 0)
+        await engine.configure(keyboardIDs: ["keyboard#255"], mouseIDs: ["mouse-a#255", "mouse-b#255"], followEnabled: true)
+        let request = Task { await engine.switchMice(2) }
+        #expect(await discoveryEventually { Set(await driver.hostWriteEndpoints) == ["mouse-a", "mouse-b"] })
+        #expect(await driver.hostWriteTargets(deviceID: "keyboard").isEmpty)
+        await engine.stop(); await request.value
+    }
+
+    @Test func followEnablesOnlyWirelessNotificationBitAndVerifiesItOnce() async throws {
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("receiver")], receiverFlags: [0xA5, 0x28, 0x5A])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardIDs: [], mouseIDs: [], followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("수신기 무선 알림 확인:") } })
+        #expect(await driver.notificationFlags == [0xA5, 0x29, 0x5A])
+        await engine.refresh(); await engine.refresh()
+        #expect(await driver.notificationWriteCount == 1)
+        await engine.stop()
+    }
+
+    @Test func readOnlyDiscoveryDoesNotChangeReceiverFlags() async throws {
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("receiver")], receiverFlags: [0xA5, 0x28, 0x5A])
+        let engine = DeviceEngine(driver: driver, log: try discoveryLog())
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
+        #expect(await driver.notificationWriteCount == 0)
+        #expect(await driver.notificationFlags == [0xA5, 0x28, 0x5A])
+        await engine.stop()
+    }
+
+    @Test func receiverWithWirelessAlreadyEnabledNeedsNoConfigurationWrite() async throws {
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("receiver")], receiverFlags: [0xA5, 0x29, 0x5A])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardIDs: [], mouseIDs: [], followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("수신기 무선 알림 확인:") } })
+        #expect(await driver.notificationWriteCount == 0)
+        await engine.stop()
+    }
+
     @Test func initialConnectionReadsFeatureHostNameAndKind() async throws {
         let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("bolt")], responsiveSlots: [1, 2])
         let engine = DeviceEngine(driver: driver, log: try discoveryLog())
@@ -391,7 +541,13 @@ struct DeviceEngineTests {
         await driver.suppressMetadataReplies()
         let returned = discoveryEndpoint("fake-keyboard-returned", physicalID: "keyboard", receiver: false,
                                          reportIDs: [0x11], serialNumber: serial)
+        await driver.holdHostInfo(deviceID: returned.id)
         await driver.add(returned)
+        #expect(await discoveryEventually { await driver.heldHostInfoCount > 0 })
+        // Re-enumeration changes the route generation, but does not prove a live link.
+        #expect(await engine.currentDevices().first?.online == false)
+        #expect(await events.connectionNoticeCount == 1)
+        await driver.releaseHostInfo()
         #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
         if stableIdentity {
             #expect(await discoveryEventually { await events.connectionNoticeCount == 2 })
@@ -491,7 +647,7 @@ struct DeviceEngineTests {
         let endpoint = discoveryEndpoint("synthetic-bluetooth", physicalID: "synthetic-keyboard", receiver: false, reportIDs: [1, 2, 0x11])
         let driver = DiscoveryDriver(endpoints: [endpoint], responsiveSlots: [0xFF])
         // This fresh, unique temporary log contains only synthetic test traffic.
-        let log = try discoveryLog()
+        let log = try discoveryLog(traceFrames: true)
         let engine = DeviceEngine(driver: driver, log: log)
         try await engine.start { _ in }
         #expect(await discoveryEventually { await engine.currentDevices().first?.kind == "키보드" })
@@ -523,7 +679,7 @@ struct DeviceEngineTests {
             let departure: [UInt8] = [0x11, 0xFF, 9, 0, 0, 1] + Array(repeating: 0, count: 14)
             let driver = DiscoveryDriver(endpoints: [keyboard, mouse], responsiveSlots: [0xFF], metadataReplies: false,
                                          initialReports: [(keyboardEndpoint, 0x11, departure)], pauseStart: true)
-            let log = try discoveryLog()
+            let log = try discoveryLog(traceFrames: true)
             let engine = DeviceEngine(driver: driver, log: log)
             // This is restoration, not a user selecting devices after discovery.
             await engine.configure(keyboardID: keyboardID, mouseID: mouseID, followEnabled: true)
