@@ -29,15 +29,6 @@ public partial class App : Application
     {
         var startup=new StartupTiming();startup.Mark("RESOURCES");
         base.OnStartup(e);
-        if(e.Args.Contains("--install-service"))
-        {var setup=Array.IndexOf(e.Args,"--service-setup");Shutdown(ServiceInstaller.Install(setup>=0 && setup+1<e.Args.Length?e.Args[setup+1]:null));return;}
-        if(e.Args.Contains("--uninstall-service")){Shutdown(ServiceInstaller.Uninstall());return;}
-        if(e.Args.Contains("--service"))
-        {
-            try{System.ServiceProcess.ServiceBase.Run(new EasySwitchDeviceService());Shutdown();}
-            catch(Exception error){try{Directory.CreateDirectory(ServiceRegistration.Root);File.WriteAllText(Path.Combine(ServiceRegistration.Root,"host-error.txt"),error.ToString());}catch(Exception){}Shutdown(1);}
-            return;
-        }
         if(e.Args.Contains("--service-check"))
         {
             var check=Array.IndexOf(e.Args,"--service-check");var folder=Path.GetFullPath(check+1<e.Args.Length?e.Args[check+1]:"artifacts/service-check");Directory.CreateDirectory(folder);
