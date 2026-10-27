@@ -6,11 +6,26 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 
 ## 다운로드
 
-- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.40/EasySwitch-0.2.40-win-x64.exe) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.40/EasySwitch-0.2.40-fast-win-x64.zip)
+- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-win-x64.exe) · [비압축 단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.exe) · [비압축 ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.zip) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
 단일 실행 파일은 내려받은 파일을 실행합니다. 빠른 실행 패키지는 압축을 푼 뒤 `EasySwitch.exe`를 실행하고, 함께 풀린 폴더와 파일을 유지합니다. 별도의 런타임 설치는 필요 없습니다.
+
+비압축 단일 실행 파일은 파일 크기가 더 크지만 실행 중 메모리 사용을 줄이기 위한 선택지입니다. 비압축 ZIP을 받았다면 압축을 풀고 `-uncompressed`가 붙은 실행 파일을 사용합니다. 앱의 기능과 설정은 기존 단일 실행 파일과 같습니다.
+
+이전 버전에서 처음 업데이트할 때 비압축 파일을 실행하고 앱의 서비스 업데이트 요청을 허용하면 서비스도 비압축으로 설치됩니다.
+
+같은 버전의 다른 배포 형식으로 바꿀 때는 사용자가 기존 앱을 트레이에서 완전히 종료한 뒤 새 파일을 실행합니다. 이미 같은 버전의 서비스가 실행 중이면 앱의 실행 파일만 바꿔도 서비스는 교체되지 않습니다.
+
+같은 버전의 서비스 형식을 수동으로 바꾸는 다음 명령은 **앱을 사용하는 본인 Windows 계정이 관리자 계정일 때만** 사용합니다. 다른 관리자 계정의 자격 증명으로 승인해야 한다면 이 수동 명령을 사용하지 말고, 이전 버전에서 앱의 일반 업데이트 절차를 이용합니다. 사용자가 실행 파일 폴더의 PowerShell에서 명령을 실행합니다.
+
+```powershell
+$installer = Start-Process -FilePath .\EasySwitch-0.2.41-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
+$installer.ExitCode
+```
+
+종료 코드 `0`은 설치 성공입니다. 다른 값이면 `%ProgramData%\EasySwitch\Service\install-result.txt`를 확인합니다.
 
 ## 처음 사용하기
 

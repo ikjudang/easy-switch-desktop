@@ -547,9 +547,10 @@ src/EasySwitch.macOS/.swiftpm/
 /private-tools/
 /tools/diagnostics/
 /src/EasySwitch.Windows/*Fixture.cs
+/tests/EasySwitch.Windows.Tests/ServiceStartupTests.cs
+/tests/EasySwitch.Windows.Tests/PackageMemoryTests.cs
 /src/EasySwitch.Windows/PreviewRenderer*.cs
 /src/EasySwitch.Windows/Floating/FloatingBenchmark.cs
 !/build/EasySwitch-*.zip
-
-# Startup animation implementation remains private.
-/src/EasySwitch.macOS/Sources/EasySwitchApp/StartupSplash.swift
+# Large uncompressed executables are distributed as release assets.
+/build/EasySwitch-*-uncompressed-*.exe

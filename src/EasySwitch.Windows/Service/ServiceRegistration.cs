@@ -105,13 +105,14 @@ internal static class ServiceInstaller
             if(Version.TryParse(old?.Version,out var oldVersion) && oldVersion>AppVersion.Current)throw new IOException("더 최신 EasySwitch 서비스가 이미 설치되어 있어.");
             if(old is not null && old.OwnerSid!=owner)throw new UnauthorizedAccessException("기존 서비스를 관리하는 Windows 계정에서 설치해 줘.");
             var source=Environment.ProcessPath!;
-            var payload=typeof(App).Assembly.Location.Length>0?typeof(App).Assembly.Location:source;
+            var assemblyPath=typeof(ServiceInstaller).Assembly.Location;
+            var payload=assemblyPath.Length>0?assemblyPath:source;
             var hash=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(payload)))[..12];
             var targetRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"EasySwitch","Service",AppVersion.Label+"-"+hash);
             Directory.CreateDirectory(targetRoot);
             var target=Path.Combine(targetRoot,"EasySwitch.Service.exe");
             var alreadyCopied=old?.Executable==target && File.Exists(target);
-            if(!alreadyCopied && typeof(App).Assembly.Location.Length>0)
+            if(!alreadyCopied && assemblyPath.Length>0)
             {
                 foreach(var file in Directory.EnumerateFiles(AppContext.BaseDirectory,"*",SearchOption.AllDirectories))
                 {
