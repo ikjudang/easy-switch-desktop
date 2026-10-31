@@ -49,6 +49,8 @@ $installer.ExitCode
 
 ### 플로팅 버튼
 
+플로팅 버튼은 [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)의 배포 파일에서 사용할 수 있습니다. 공개 소스로 직접 빌드한 앱에는 포함되지 않습니다.
+
 설정의 **플로팅 버튼** 행은 하위 설정을 펼치거나 접습니다. 오른쪽 토글은 플로팅 버튼의 사용을 켜거나 끕니다. 트레이 메뉴에서도 플로팅 버튼을 켜고 끌 수 있습니다.
 
 - 홈 버튼을 누르면 채널 버튼과 **App** 버튼이 펼쳐집니다.
@@ -86,9 +88,23 @@ $installer.ExitCode
 
 자세한 사용 방법은 [로그 안내](docs/public/logs.md)를 참고합니다.
 
-### 공개 소스
+### 공개 소스와 빌드
 
-이 저장소에는 공개 대상 소스를 제공합니다. 일부 내부 구현은 공개하지 않으므로 공개 소스만으로 전체 앱을 빌드할 수는 없습니다. 배포 실행 파일에는 앱 실행에 필요한 기능이 포함됩니다.
+이 저장소의 Windows 공개 소스로 플로팅 버튼을 제외한 앱을 빌드할 수 있습니다. 공개 소스에는 플로팅 버튼 기능이 포함되지 않습니다.
+
+**플로팅 버튼을 사용하려면 직접 빌드하지 말고 [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)에서 별도로 빌드된 배포 파일을 사용합니다.**
+
+직접 빌드한 앱의 설정과 트레이 메뉴에는 플로팅 버튼 항목이 없습니다. 사용자가 트레이 아이콘을 좌클릭하면 앱이 메인 창을 엽니다. 채널 전환, 키보드 따라 마우스 전환, 토스트, 로그와 백그라운드 서비스 같은 나머지 기능은 포함됩니다.
+
+빌드에는 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)가 필요합니다. 사용자가 저장소 폴더의 PowerShell에서 다음 명령을 실행합니다.
+
+```powershell
+dotnet build src/EasySwitch.Windows/EasySwitch.Windows.csproj -c Release
+```
+
+빌드한 실행 파일은 `src/EasySwitch.Windows/bin/Release/net10.0-windows/EasySwitch.exe`입니다.
+
+macOS 공개 소스는 일부 내부 구현을 공개하지 않으므로 공개 소스만으로 전체 앱을 빌드할 수 없습니다. macOS 앱은 배포 파일을 사용합니다.
 
 ### 라이선스
 
@@ -141,6 +157,8 @@ To rename a channel, right-click the channel, edit the name in the field that ap
 
 ### Floating button
 
+The floating button is available in the release files from [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases). It is not included in an app you build from the public source.
+
 In Settings, the **Floating button** row expands or collapses its sub-settings. The toggle on the right turns the floating button on or off. You can also turn the floating button on or off from the tray menu.
 
 - Clicking the home button expands the channel buttons and the **App** button.
@@ -178,9 +196,23 @@ In **Settings → Connection log**, you can view connection and switch records, 
 
 For more details, see the [log guide (Korean)](docs/public/logs.md).
 
-### Public source
+### Public source and building
 
-This repository provides the source code that is made public. Some internal implementation is not public, so the full app cannot be built from the public source alone. The released executables include everything needed to run the app.
+You can build the app without the floating button from the Windows public source in this repository. The public source does not include the floating button feature.
+
+**To use the floating button, do not build the app yourself; use the separately built release files from [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases).**
+
+An app you build yourself has no floating button items in Settings or the tray menu. When you left-click the tray icon, the app opens the main window. The other features, such as channel switching, following the keyboard with the mouse, toasts, logs, and the background service, are included.
+
+Building requires the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0). Run the following command in PowerShell in the repository folder.
+
+```powershell
+dotnet build src/EasySwitch.Windows/EasySwitch.Windows.csproj -c Release
+```
+
+The built executable is `src/EasySwitch.Windows/bin/Release/net10.0-windows/EasySwitch.exe`.
+
+Some internal implementation of the macOS public source is not public, so the full macOS app cannot be built from the public source alone. Use the release files for the macOS app.
 
 ### License
 

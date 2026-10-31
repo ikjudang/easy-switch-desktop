@@ -1,5 +1,5 @@
 using System.Windows.Media;
-using EasySwitch.Windows.Floating;
+using EasySwitch.Windows.Notices;
 
 namespace EasySwitch.Windows.Tests;
 
