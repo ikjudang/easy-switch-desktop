@@ -32,6 +32,11 @@ internal sealed record ServiceSnapshot(string Epoch,long Sequence,DeviceInfo[] D
     // Local receive stamps never cross the service wire or survive a connection.
     [System.Text.Json.Serialization.JsonIgnore] public long ClientConnection{get;init;}
     [System.Text.Json.Serialization.JsonIgnore] public long ClientRevision{get;init;}
+    /// <summary>
+    /// Events of this epoch up to this sequence were already delivered to an earlier UI process on this
+    /// Windows account, which wrote them to its own log file. Show them, but do not record them again.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore] public long ClientRecordedThrough{get;init;}
 }
 internal sealed record ServiceReply(ServiceSnapshot? State=null,string? Error=null,byte[]? Data=null,long Length=0,string? LogEpoch=null);
 

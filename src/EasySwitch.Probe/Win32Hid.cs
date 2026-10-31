@@ -45,13 +45,41 @@ internal static class Win32Hid
     /// <summary>지금 있는 로지텍(046D) HID collection 경로 전부.</summary>
     public static HashSet<string> ListLogitechPaths()
     {
+        var (status, _, paths) = ReadHidInterfaceList();
+        if (status != 0) return [];
+        return paths.Where(p => p.Contains("046d", StringComparison.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>CONFIGRET CR_BUFFER_SMALL: 크기 조회와 목록 조회 사이에 목록이 커졌다(기기 도착 순간).</summary>
+    internal const int CrBufferSmall = 0x1A;
+
+    /// <summary>HID 인터페이스 경로 목록. 실패하면 상태 코드와 실패한 호출 이름을 돌려준다.</summary>
+    internal static (int Status, string Call, string[] Paths) ReadHidInterfaceList()
+    {
         HidD_GetHidGuid(out var guid);
-        if (CM_Get_Device_Interface_List_Size(out var length, ref guid, null, 0) != 0 || length <= 1) return [];
-        var buffer = new char[length];
-        if (CM_Get_Device_Interface_List(ref guid, null, buffer, length, 0) != 0) return [];
-        return new string(buffer).Split('\0', StringSplitOptions.RemoveEmptyEntries)
-            .Where(p => p.Contains("046d", StringComparison.OrdinalIgnoreCase))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return ReadInterfaceList(
+            () => (CM_Get_Device_Interface_List_Size(out var length, ref guid, null, 0), length),
+            buffer => CM_Get_Device_Interface_List(ref guid, null, buffer, buffer.Length, 0));
+    }
+
+    /// <summary>
+    /// 크기 조회 → 목록 조회 2단계. 그 사이에 인터페이스가 생기면 목록 조회가 CR_BUFFER_SMALL로 실패하는데,
+    /// 이는 오류가 아니라 "크기를 다시 물어라"는 뜻이라 크기부터 다시 읽는다(늘어난 크기도 반영). 다른 상태는 그대로 돌려준다.
+    /// </summary>
+    internal static (int Status, string Call, string[] Paths) ReadInterfaceList(Func<(int Status, int Length)> size, Func<char[], int> fill, int attempts = 5)
+    {
+        var status = 0;
+        for (var attempt = 0; attempt < Math.Max(1, attempts); attempt++)
+        {
+            (status, var length) = size();
+            if (status != 0) return (status, "크기 조회", []);
+            if (length <= 1) return (0, "", []);
+            var buffer = new char[length];
+            status = fill(buffer);
+            if (status == 0) return (0, "", new string(buffer).Split('\0', StringSplitOptions.RemoveEmptyEntries));
+            if (status != CrBufferSmall) return (status, "조회", []);
+        }
+        return (status, $"조회({attempts}회 모두 목록이 커짐)", []);
     }
 
     /// <summary>접근 권한 없이 열어 정체만 읽는다(키보드·마우스 collection도 이건 된다). 실패하면 null.</summary>

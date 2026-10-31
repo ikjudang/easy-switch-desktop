@@ -29,10 +29,12 @@ internal static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int RunService()
     {
+        // Registered before the service log exists, so a failure during OnStart still leaves a dated record.
+        Infrastructure.CrashRecorder.Install(Path.Combine(ServiceRegistration.Root,"host-error.txt"));
         try{System.ServiceProcess.ServiceBase.Run(new EasySwitchDeviceService());return 0;}
         catch(Exception error)
         {
-            try{Directory.CreateDirectory(ServiceRegistration.Root);File.WriteAllText(Path.Combine(ServiceRegistration.Root,"host-error.txt"),error.ToString());}catch(Exception){}
+            Infrastructure.CrashRecorder.Record("서비스 호스트 오류",error.ToString());
             return 1;
         }
     }
@@ -40,6 +42,7 @@ internal static class Program
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int RunWpf()
     {
+        Infrastructure.CrashRecorder.Install(Path.Combine(Infrastructure.SettingsStore.DataDirectory,"crash.txt"));
         var app=new App();app.InitializeComponent();return app.Run();
     }
 }

@@ -32,4 +32,11 @@ public static class HidppMatch
         }
         return null;
     }
+
+    /// <summary>
+    /// 요청의 byte2와 byte3이 같으면(예: feature index 0x09에 함수 0·software id 9) 두 에러 배치의 바이트가 같아 어느 배치인지 가를 수 없다.
+    /// 이런 요청의 에러로는 배치를 기록하지 않는다.
+    /// </summary>
+    public static bool ErrorLayoutAmbiguous(ReadOnlySpan<byte> request) =>
+        request.Length >= HidppConstants.HeaderLength && request[2] == request[3];
 }

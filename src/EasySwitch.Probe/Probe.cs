@@ -8,6 +8,9 @@ internal sealed record ProbeOptions(string LogDirectory, double Minutes, int Sof
 {
     public static ProbeOptions Parse(string[] args)
     {
+        // Deliberately not the app's id (0x09): the installed service usually runs while the probe measures,
+        // both open shared handles and see each other's replies, and the same id would let each complete
+        // the other's pending request. A different id also lets the probe report the app as another sender.
         var options = new ProbeOptions(Path.Combine(Environment.CurrentDirectory, "logs"), 0, HidppConstants.DefaultSoftwareId, 1500, false, false);
         for (var i = 0; i < args.Length; i++)
         {

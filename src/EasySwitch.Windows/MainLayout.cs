@@ -22,7 +22,7 @@ public partial class MainWindow
     private Grid? _pageHost;
     private ListBox LogList = new();
     private string _builtPage = "", _builtLanguage = "";
-    private bool _pageRefreshQueued,_pageRefreshHidden;
+    private bool _pageRefreshQueued,_pageRefreshHidden,_pageRefreshAfterPress;
     private bool _floatingExpanded, _exportExpanded, _toastExpanded;
     private bool _showCodeLog;
 #if EASYSWITCH_FLOATING
@@ -91,6 +91,11 @@ public partial class MainWindow
             if(p.X<0 || p.Y<0 || p.X>focused.ActualWidth || p.Y>focused.ActualHeight) ClearInputFocus();
         };
         PreviewMouseWheel+=(_,_)=>ClearInputFocus();
+        // A page refresh postponed during a press resumes once the press has ended. The handlers
+        // only queue that refresh, so the press's own click runs first and unchanged.
+        AddHandler(Mouse.LostMouseCaptureEvent,new MouseEventHandler((_,_)=>ResumePageRefresh()),true);
+        AddHandler(PreviewMouseUpEvent,new MouseButtonEventHandler((_,_)=>ResumePageRefresh()),true);
+        AddHandler(PreviewKeyUpEvent,new KeyEventHandler((_,_)=>ResumePageRefresh()),true);
     }
     private void ClearInputFocus() { Keyboard.ClearFocus(); FocusManager.SetFocusedElement(this,null); }
     private void VmChanged(object? sender,PropertyChangedEventArgs e)
@@ -105,9 +110,41 @@ public partial class MainWindow
             // do not rebuild a hidden main window while a floating animation is running.
             if(IsLoaded && !IsVisible){_pageRefreshHidden=true;return;}
             if(!IsLoaded){BuildPage();return;}
-            if(_pageRefreshQueued)return;
-            _pageRefreshQueued=true;
-            Dispatcher.BeginInvoke(()=>{_pageRefreshQueued=false;if(_vm?.IsSettings!=false || (_vm.IsHome && _editingChannel is not null))return;if(IsVisible)BuildPage();else _pageRefreshHidden=true;},DispatcherPriority.Background);
+            QueuePageRefresh();
+        }
+    }
+    private void QueuePageRefresh()
+    {
+        if(_pageRefreshQueued)return;
+        _pageRefreshQueued=true;
+        Dispatcher.BeginInvoke(()=>
+        {
+            _pageRefreshQueued=false;if(_vm?.IsSettings!=false || (_vm.IsHome && _editingChannel is not null))return;
+            if(!IsVisible){_pageRefreshHidden=true;return;}
+            // A rebuild would replace the control under a press: its mouse-up would then reach a
+            // new control that never saw the press, and a channel tile's switch request would be lost.
+            if(IsPagePressed()){_pageRefreshAfterPress=true;return;}
+            BuildPage();
+        },DispatcherPriority.Background);
+    }
+    private void ResumePageRefresh()
+    {
+        if(!_pageRefreshAfterPress)return;
+        _pageRefreshAfterPress=false;QueuePageRefresh();
+    }
+    private bool IsPagePressed()
+    {
+        if(_pageHost is null)return false;
+        if(Mouse.Captured is Visual captured && _pageHost.IsAncestorOf(captured))return true;
+        return PressedButtonWithin(_pageHost);
+        static bool PressedButtonWithin(DependencyObject parent)
+        {
+            for(var i=0;i<VisualTreeHelper.GetChildrenCount(parent);i++)
+            {
+                var child=VisualTreeHelper.GetChild(parent,i);
+                if(child is ButtonBase{IsPressed:true} || PressedButtonWithin(child))return true;
+            }
+            return false;
         }
     }
     private void BuildShell()
@@ -139,6 +176,7 @@ public partial class MainWindow
     private void BuildPage()
     {
         if(_vm is null || _pageHost is null) return;
+        _pageRefreshAfterPress=false;
         _pageHost.Children.Clear(); _pageHost.RowDefinitions.Clear(); _opacityInput=null;_floatingSizeRow=null;_percentInputs.Clear();
         _pageHost.RowDefinitions.Add(new(){Height=GridLength.Auto}); _pageHost.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});
         var header=Text(_vm.IsHome?"EasySwitch":_vm.IsDevices?T("기기 선택","Select devices"):T("설정","Settings"),26,"Text",FontWeights.ExtraBold); header.Margin=new Thickness(0,0,0,_vm.IsSettings?22:24);
@@ -188,7 +226,7 @@ public partial class MainWindow
             if(current||last)badge.Children.Add(new CircleMarker{Width=6,Height=6,Margin=new Thickness(0,0,5,0),VerticalAlignment=VerticalAlignment.Center,Tag="ChannelStatusDot"});
             Grid.SetColumn(status,1);badge.Children.Add(status);
             var pill=new CapsuleBorder { Child=badge,Tag="ChannelStatusPill",Padding=new Thickness(current||last?11:0,4,current||last?11:0,4),VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Center,Background=current?new SolidColorBrush(Color.FromArgb(56,255,255,255)):last?B("Point"):Brushes.Transparent };slot.Children.Add(pill);stack.Children.Add(slot);
-            var button=Button(stack,()=>{if(_editingChannel is null)_=_vm.SwitchAsync(target,"홈 채널 버튼");},corners:new(20));button.Background=current?B("Point"):B("Card");button.ContextMenu=BuildChannelNameMenu(target);
+            var button=Button(stack,()=>{if(_editingChannel is null)_vm.RequestSwitch(target,SwitchRequestSource.HomeTile);},corners:new(20));button.Background=current?B("Point"):B("Card");button.ContextMenu=BuildChannelNameMenu(target);
             var frame=new Border { Child=button,Tag=$"ChannelTile{target}",CornerRadius=new(20),BorderThickness=new Thickness(current?0:1),BorderBrush=B("Border"),Margin=new Thickness(target==0?0:7,0,target==2?0:7,0),ClipToBounds=true };tiles.Children.Add(frame);
         }
         Grid.SetRow(tiles,1);Grid.SetColumn(tiles,2);grid.Children.Add(tiles);return grid;
@@ -395,10 +433,7 @@ public partial class MainWindow
         var input=_opacityInput;
         _percentInputs.Add(input);
         input.TextChanged+=(_,_)=>{if(syncing)return;var raw=input.Text;if(raw.Length==0)return;if(!int.TryParse(raw,out var value)){syncing=true;input.Text=Current().ToString();syncing=false;return;}value=Math.Clamp(value,0,maximum);if(value>=minimum){syncing=true;Set(value);slider.Value=value;syncing=false;}if(raw!=value.ToString()){syncing=true;input.Text=value.ToString();input.CaretIndex=input.Text.Length;syncing=false;}};
-        var valueDescriptor=DependencyPropertyDescriptor.FromProperty(FineSlider.ValueProperty,typeof(FineSlider));
-        EventHandler valueChanged=(_,_)=>{if(syncing)return;syncing=true;Set((int)Math.Round(slider.Value));input.Text=Current().ToString();syncing=false;};
-        valueDescriptor.AddValueChanged(slider,valueChanged);
-        slider.Unloaded+=(_,_)=>valueDescriptor.RemoveValueChanged(slider,valueChanged);
+        slider.ValueChanged+=(_,_)=>{if(syncing)return;syncing=true;Set((int)Math.Round(slider.Value));input.Text=Current().ToString();syncing=false;};
         input.LostKeyboardFocus+=(_,_)=>{var value=int.TryParse(input.Text,out var parsed)?Math.Clamp(parsed,minimum,maximum):Current();syncing=true;Set(value);slider.Value=value;input.Text=Current().ToString();syncing=false;};input.KeyDown+=(_,e)=>{if(e.Key==Key.Enter){ClearInputFocus();e.Handled=true;}};return row;
     }
     private UIElement BuildLog()
@@ -431,7 +466,8 @@ public partial class MainWindow
         {
             if(!ReferenceEquals(_channelNameMenu,menu))return;
             _editingChannel=null;_channelDraft="";_channelNameMenu=null;
-            Dispatcher.BeginInvoke(()=>{if(_editingChannel is null)BuildPage();},DispatcherPriority.Background);
+            // The click that closes the menu may be a press on a channel tile; refresh after it.
+            QueuePageRefresh();
         };
         return menu;
     }

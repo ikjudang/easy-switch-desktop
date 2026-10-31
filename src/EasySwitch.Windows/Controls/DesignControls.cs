@@ -62,8 +62,11 @@ internal sealed class BooleanTextConverter(string on,string off):IValueConverter
 
 internal sealed class FineSlider : FrameworkElement
 {
-    public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(nameof(Value),typeof(double),typeof(FineSlider),new FrameworkPropertyMetadata(0d,FrameworkPropertyMetadataOptions.BindsTwoWayByDefault | FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(nameof(Value),typeof(double),typeof(FineSlider),new FrameworkPropertyMetadata(0d,FrameworkPropertyMetadataOptions.BindsTwoWayByDefault | FrameworkPropertyMetadataOptions.AffectsRender,(slider,_)=>((FineSlider)slider).ValueChanged?.Invoke(slider,EventArgs.Empty)));
     public double Value { get => (double)GetValue(ValueProperty); set => SetValue(ValueProperty,Math.Clamp(value,Minimum,Maximum)); }
+    // Raised for every effective Value change, like a property-descriptor listener, but owned by
+    // this slider: no process-wide registration that has to be removed by hand.
+    public event EventHandler? ValueChanged;
     public double Minimum { get; set; }
     public double Maximum { get; set; } = 100;
     private double Range=>Math.Max(1,Maximum-Minimum);

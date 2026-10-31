@@ -33,7 +33,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private int _exportGeneration;
     private readonly System.Collections.Concurrent.ConcurrentQueue<LogEntry> _pendingLogs=new();
     private readonly System.Collections.Concurrent.ConcurrentQueue<CodeLogEntry> _pendingCodes=new();
-    private bool _refreshing;
     private IReadOnlyList<DeviceInfo>? _previewDevices;
     private int _stopping;
     private readonly object _followGate = new();
@@ -41,7 +40,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _observedArrivals = new();
     private string _page = "홈";
     private string _lastRequest = "앱이 선택한 기기에 전환 명령을 보내.";
-    private string _settingsFeedback = "";
     private bool _enableAfterFolder;
     private int? _lastDestination;
     private long _batchGeneration;
@@ -52,18 +50,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private int _codeSequence;
     private int _connectionNoticeSequence;
     private readonly LocalConnectionNotices _localConnections=new();
+    // Re-checks a keyboard follow that waits for its mouse; it runs only while one is pending.
     private readonly DispatcherTimer _followExpiry=new(){Interval=TimeSpan.FromMilliseconds(500)};
+    private bool _followExpiryAllowed;
     public event Action? FloatingSettingsChanged;
     public event Action? ToastSettingsChanged;
     public event Action<SwitchNotice>? NoticeRequested;
     public event Action<SwitchNotice>? ConnectionNoticeRequested;
     public event Action<int>? KeyboardSwitchObserved;
     public event PropertyChangedEventHandler? PropertyChanged;
-    public event Action? StateChanged;
-    public event Action? ExitRequested;
     public ObservableCollection<DeviceInfo> Devices { get; } = [];
-    public ObservableCollection<DeviceInfo> KeyboardOptions { get; } = [];
-    public ObservableCollection<DeviceInfo> MouseOptions { get; } = [];
     public ObservableCollection<DeviceChoice> DeviceChoices { get; } = [];
     public ObservableCollection<DeviceChoice> HomeDevices { get; } = [];
     public ObservableCollection<LogEntry> Logs { get; } = [];
@@ -72,26 +68,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand NavigateCommand { get; }
     public ICommand SwitchCommand { get; }
     public ICommand RefreshCommand { get; }
-    public ICommand OpenLogFolderCommand { get; }
     public ICommand ChooseExportCommand { get; }
     public ICommand StopExportCommand { get; }
-    public ICommand ExitCommand { get; }
     public ICommand ToggleLogCommand { get; }
     public ICommand ExportLogCommand { get; }
     public ICommand ExportCodesCommand { get; }
-    public string Page { get => _page; private set { _page = value; if(IsLog){Logs.Clear();foreach(var entry in _log.Recent())Logs.Add(entry);}Notify(); Notify(nameof(PageTitle)); Notify(nameof(IsHome)); Notify(nameof(IsDevices)); Notify(nameof(IsLog)); Notify(nameof(IsSettings)); } }
-    public string PageTitle => IsDevices ? "기기 선택" : IsLog ? "설정" : Page;
+    public string Page { get => _page; private set { _page = value; if(IsLog){Logs.Clear();foreach(var entry in _log.Recent())Logs.Add(entry);}Notify(); Notify(nameof(IsHome)); Notify(nameof(IsDevices)); Notify(nameof(IsLog)); Notify(nameof(IsSettings)); } }
     public bool IsHome => Page == "홈";
     public bool IsDevices => Page == "기기";
     public bool IsLog => Page == "연결 로그";
     public bool IsSettings => Page is "설정" or "연결 로그";
     public string LastRequest { get => _lastRequest; private set { _lastRequest = value; Notify(); } }
-    public string SettingsFeedback { get => _settingsFeedback; private set { _settingsFeedback = value; Notify(); } }
     public string LogPath => _log.FilePath;
-    public string ExportPath => _settings.Value.ExportDirectory ?? "앱이 로컬 로그 폴더에 기록하고 있어.";
     public bool HasDevices => Devices.Count > 0;
-    public int ConnectedCount => Devices.Count(d => d.Online);
-    public string ConnectionSummary => $"연결된 기기 ({ConnectedCount}대)";
     private string[] SelectedIds => _settings.Value.SelectedDeviceIds ?? new[] { KeyboardId, MouseId }.Where(id => !string.IsNullOrEmpty(id)).Cast<string>().Distinct().ToArray();
     public bool IsSelectedDevice(string id) => SelectedIds.Contains(id);
     internal bool KnowsRole(string id,string role)
@@ -101,13 +90,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         return _settings.Value.SelectedDeviceNames.Any(d=>d.Id==id && d.Kind==role) || (role=="키보드"?id==KeyboardId:id==MouseId);
     }
     public int SelectedCount => SelectedIds.Length;
-    public string SelectionSummary => $"{SelectedCount}개 선택 완료";
     public bool HasSelection => SelectedCount > 0;
     public bool NoDevices => DeviceChoices.Count == 0;
     public bool NoHomeDevices => HomeDevices.Count == 0;
     public string LogSummary => T($"{Logs.Count}건",$"{Logs.Count} entries");
-    public string LogCardDescription => IsLog ? "연결 로그 표시 중" : "연결·전환 기록 확인";
-    public string ExportLabel => _settings.Value.ExportDirectory is { } directory ? Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) : "로컬 폴더에 기록 중";
+    public string ExportLabel => _settings.Value.ExportDirectory is { } directory ? Path.GetFileName(directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) : T("로컬 폴더에 기록 중","Saving to the local folder");
     public bool HasExportFolder => _settings.Value.ExportDirectory is not null;
     public bool LogFolderEnabled
     {
@@ -116,7 +103,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             if(value==LogFolderEnabled)return;
             if(value && !HasExportFolder){_enableAfterFolder=true;try{ChooseExport();}finally{_enableAfterFolder=false;}Notify(nameof(LogFolderEnabled));return;}
-            if(_deferUiWork){_=ConfigureExportAsync(_settings.Value.ExportDirectory,value);return;}
+            if(_deferUiWork){ConfigureExportAsync(_settings.Value.ExportDirectory,value).LogFaults(_log,"로그 폴더 변경 처리");return;}
             try{_log.SetExportDirectory(value?_settings.Value.ExportDirectory:null);SavePreference(_settings.Value with {ExportEnabled=value});}
             catch(Exception error)when(error is IOException or UnauthorizedAccessException){_log.Write($"외부 로그 저장 변경 실패: {error.Message}");Notify(nameof(LogFolderEnabled));}
         }
@@ -127,13 +114,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string FollowStatus => FollowEnabled ? T("마우스 따라가기 켜짐", "Mouse follow on") : T("마우스 따라가기 꺼짐", "Mouse follow off");
     public bool SelectedKeyboardOnline => Devices.Any(d => d.Id == KeyboardId && d.Online);
     public bool SelectedMouseOnline => Devices.Any(d => d.Id == MouseId && d.Online);
-    public string KeyboardStatus => SelectionStatus(KeyboardId, "키보드");
-    public string MouseStatus => SelectionStatus(MouseId, "마우스");
-    public string KeyboardName => Devices.FirstOrDefault(d => d.Id == KeyboardId)?.Name ?? _settings.Value.KeyboardName ?? "키보드";
-    public string MouseName => Devices.FirstOrDefault(d => d.Id == MouseId)?.Name ?? _settings.Value.MouseName ?? "마우스";
-    public bool Channel1Current => IsCurrent(0);
-    public bool Channel2Current => IsCurrent(1);
-    public bool Channel3Current => IsCurrent(2);
     public bool English => _settings.Value.Language == "en";
     public string T(string ko, string en) => English ? en : ko;
     public int? LastDestination => _lastDestination;
@@ -213,28 +193,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void PublishDestination(int target) => Dispatch(() => { _lastDestination = target; NotifyAllState(); });
 
-    public string? KeyboardId
-    {
-        get => _settings.Value.KeyboardId ?? "";
-        set
-        {
-            if (_refreshing || value == KeyboardId) return;
-            var chosen = Devices.FirstOrDefault(d => d.Id == value);
-            if (!string.IsNullOrEmpty(value) && value == MouseId) { SettingsFeedback = "사용자는 키보드와 마우스를 서로 다른 기기로 선택해야 해."; Notify(); return; }
-            Save(_settings.Value with { KeyboardId = EmptyToNull(value), KeyboardName = chosen?.Name }, "키보드 선택 변경");
-        }
-    }
-    public string? MouseId
-    {
-        get => _settings.Value.MouseId ?? "";
-        set
-        {
-            if (_refreshing || value == MouseId) return;
-            var chosen = Devices.FirstOrDefault(d => d.Id == value);
-            if (!string.IsNullOrEmpty(value) && value == KeyboardId) { SettingsFeedback = "사용자는 키보드와 마우스를 서로 다른 기기로 선택해야 해."; Notify(); return; }
-            Save(_settings.Value with { MouseId = EmptyToNull(value), MouseName = chosen?.Name }, "마우스 선택 변경");
-        }
-    }
+    public string? KeyboardId => _settings.Value.KeyboardId ?? "";
+    public string? MouseId => _settings.Value.MouseId ?? "";
     public bool FollowEnabled
     {
         get => _settings.Value.FollowEnabled;
@@ -250,21 +210,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _switches = new SwitchCoordinator(log.Write);
         _page=HasSelection?"홈":"기기";
         NavigateCommand = new RelayCommand(p => Page = p?.ToString() ?? "홈");
-        SwitchCommand = new RelayCommand(p => _ = SwitchAsync(Convert.ToInt32(p), "채널 버튼"));
-        RefreshCommand = new RelayCommand(_ => { _log.Write("사용자가 기기 새로 고침을 요청함"); if(_service is not null)_=RefreshServiceAsync();else _monitor.Refresh(); });
-        OpenLogFolderCommand = new RelayCommand(_ => OpenFolder(Path.GetDirectoryName(LogPath)!));
+        SwitchCommand = new RelayCommand(p => RequestSwitch(Convert.ToInt32(p), SwitchRequestSource.Command));
+        RefreshCommand = new RelayCommand(_ => { _log.Write("사용자가 기기 새로 고침을 요청함"); if(_service is not null)RefreshServiceAsync().LogFaults(_log,"서비스 새로 고침 처리");else _monitor.Refresh(); });
         ChooseExportCommand = new RelayCommand(_ => ChooseExport());
         StopExportCommand = new RelayCommand(_ => SetExport(null));
         ExportLogCommand=new RelayCommand(_=>ExportLog());
         ExportCodesCommand=new RelayCommand(_=>ExportCodes());
-        ExitCommand = new RelayCommand(_ => ExitRequested?.Invoke());
-        ToggleLogCommand = new RelayCommand(_ => { Page = IsLog ? "설정" : "연결 로그"; Notify(nameof(LogCardDescription)); });
+        ToggleLogCommand = new RelayCommand(_ => { Page = IsLog ? "설정" : "연결 로그"; });
         foreach (var entry in log.Recent()) {Logs.Add(entry);if(!entry.IsProtocolTrace)ActivityLogs.Add(entry);}
         foreach(var entry in log.RecentCodes())CodeLogs.Add(entry);
         log.Added += OnLog;
         log.CodeAdded+=OnCode;
         _monitor.Changed += () => { TryFollow();if(_deferUiWork)ObserveConnections(_monitor.Snapshot());Dispatch(UpdateDevices); };
-        _monitor.HostChanged += OnHostChanged;
+        // Arm the follow re-check only after the signal was handled; the follow write is never delayed.
+        _monitor.HostChanged += (keyboard,target) => { OnHostChanged(keyboard,target); ArmFollowExpiry(); };
         _monitor.PairingInvalidated += device => Dispatch(() =>
         {
             _switches.Cancel(device.Id, "수신기 슬롯 등록이 변경됨");
@@ -291,17 +250,33 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (seenBefore)
             {
                 Interlocked.Increment(ref _batchGeneration);
-                ClearFollow("키보드의 이 PC 로컬 링크가 다시 감지됨");
+                ClearFollow("키보드의 이 PC 로컬 링크가 다시 감지됨",FollowCancel.Returned);
                 _switches.CancelAll("키보드의 이 PC 로컬 링크가 다시 감지됨");
             }
             _log.Write($"[{device.Name}] 키보드의 이 PC 로컬 링크 도착 감지. 현재 채널은 별도 응답으로 확인하며 태블릿 LAN 알림은 이 버전에서 제공하지 않음");
         };
         UpdateDevices();
         CodeSettings();
-        _followExpiry.Tick+=(_,_)=>TryFollow();
+        _followExpiry.Tick+=(_,_)=>{TryFollow();StopFollowExpiryWhenIdle();};
     }
 
-    public void Start() { if(_service is not null){_service.Start();return;}if (_previewDevices is null) {_monitor.Start();_followExpiry.Start();} }
+    public void Start() { if(_service is not null){_service.Start();return;}if (_previewDevices is null) {_monitor.Start();_followExpiryAllowed=true;ArmFollowExpiry();} }
+    // The re-check enforces the 10 s follow expiry and retries readiness. Run it only while a
+    // follow waits; a follow keeps its own start time, so arming it later does not move the expiry.
+    private void ArmFollowExpiry()=>Dispatch(()=>
+    {
+        if(!_followExpiryAllowed || Volatile.Read(ref _stopping)!=0 || _followExpiry.IsEnabled)return;
+        lock(_followGate)if(_pendingFollow is null)return;
+        _followExpiry.Start();
+    });
+    private void StopFollowExpiryWhenIdle()
+    {
+        lock(_followGate)if(_pendingFollow is not null)return;
+        _followExpiry.Stop();
+    }
+    // Channel requests from the window, tray and floating button. SwitchAsync starts the writes
+    // before it returns; the fault logger is attached afterwards and never delays them.
+    internal void RequestSwitch(int target,string reason)=>SwitchAsync(target,reason).LogFaults(_log,"채널 전환 요청 처리");
 
     internal bool HardwareStarted=>_monitor.Started;
     internal IReadOnlyList<DeviceInfo> DeviceSnapshot=>_serviceDevices??_previewDevices??_monitor.Snapshot();
@@ -337,14 +312,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     internal async Task InstallBootServiceAsync()
     {
         if(_service is not null){await ServiceRegistration.EnsureInstalledAsync(_log,true);return;}
-        await ChangePowerAsync(true,"서비스 설치 준비");
+        await ChangePowerAsync(true,"서비스 설치 준비",FollowCancel.Settings);
         try
         {
             await _monitor.SuspendAndWaitAsync();
             await ServiceRegistration.EnsureInstalledAsync(_log,true);
             if(ServiceRegistration.Installed){AttachService(new ServiceClient(_log));_service!.Start();}
         }
-        finally{if(_service is null)await ChangePowerAsync(false,"서비스 설치 미완료 후 복구");}
+        finally{if(_service is null)await ChangePowerAsync(false,"서비스 설치 미완료 후 복구",FollowCancel.Settings);}
     }
     internal void FlushServiceSettings(){try{_settings.FlushAsync().GetAwaiter().GetResult();_service?.FlushConfigurationAsync().GetAwaiter().GetResult();}catch(Exception error){_log.Write("로그아웃 전 서비스 설정 저장 확인: "+error.Message);}}
     private void ServiceSettingsSaved(AppSettings settings)
@@ -359,8 +334,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if(_service is {} client && !client.IsCurrent(snapshot))return;
         foreach(var item in snapshot.Events)
         {
-            if(item.Log is {} entry)_log.Import(entry);
-            if(item.Code is {} code)_log.Import(code);
+            // Entries an earlier UI process already wrote to its file are shown again but not re-recorded.
+            var history=item.Sequence<=snapshot.ClientRecordedThrough;
+            if(item.Log is {} entry){if(history)_log.ImportHistory(entry);else _log.Import(entry);}
+            if(item.Code is {} code){if(history)_log.ImportHistory(code);else _log.Import(code);}
             if(item.KeyboardTarget is {} target)
             {
                 if(_keyboardEventEpoch!=snapshot.Epoch){_keyboardEventEpoch=snapshot.Epoch;_keyboardEventSequence=0;}
@@ -421,10 +398,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         Save(preferences.Apply(_settings.Value),"Windows 서비스의 전환 설정 변경");
     }
     private async Task RefreshServiceAsync(){try{await _service!.RefreshAsync();}catch(Exception error)when(error is IOException or TimeoutException or OperationCanceledException){_log.Write("서비스 새로 고침 실패: "+error.Message);}}
-    internal async Task ChangePowerAsync(bool suspend,string reason)
+    // Callers are Windows suspend/resume and the service's execution-gap check, so a cancelled
+    // follow is a power cancellation unless the caller says otherwise.
+    internal async Task ChangePowerAsync(bool suspend,string reason,FollowCancel cancel=FollowCancel.Power)
     {
         var generation=Interlocked.Increment(ref _powerGeneration);_powerSuspended=suspend;
-        _followExpiry.Stop();_monitor.Suspend();Interlocked.Increment(ref _batchGeneration);ClearFollow(reason);_switches.CancelAll(reason);
+        _followExpiryAllowed=false;_followExpiry.Stop();_monitor.Suspend();Interlocked.Increment(ref _batchGeneration);ClearFollow(reason,cancel);_switches.CancelAll(reason);
         await _powerGate.WaitAsync();
         try
         {
@@ -432,13 +411,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if(generation!=Volatile.Read(ref _powerGeneration) || Volatile.Read(ref _stopping)!=0)return;
             _observedArrivals.Clear();_log.Write(reason+": 오래된 전환을 취소함");
             _log.WriteCode($"{SwitchCode.Prefix} SVC POWER {(suspend?"SUSPEND":"RESUME")}");
-            if(!suspend){_monitor.Recover();if(_previewDevices is null)_followExpiry.Start();}
+            if(!suspend){_monitor.Recover();if(_previewDevices is null){_followExpiryAllowed=true;ArmFollowExpiry();}}
         }
         finally{_powerGate.Release();}
     }
     internal void BlockForSuspend(string reason)
     {
-        _powerSuspended=true;_monitor.Suspend();Interlocked.Increment(ref _batchGeneration);ClearFollow(reason);_switches.CancelAll(reason);
+        _powerSuspended=true;_monitor.Suspend();Interlocked.Increment(ref _batchGeneration);ClearFollow(reason,FollowCancel.Power);_switches.CancelAll(reason);
     }
 
     internal void UsePreviewDevices(IReadOnlyList<DeviceInfo> devices)
@@ -458,28 +437,56 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             return;
         }
         if(_powerSuspended){_log.Write("전환 생략: 절전 전환 처리 중");return;}
-        var code=NewCodeRun(target,reason.Contains("트레이")?"T":reason.Contains("플로팅")?"P":"B");
+        var code=NewCodeRun(target,SwitchRequestSource.Code(reason));
         CodeEvent(code,"BEGIN");
-        ClearFollow("사용자가 채널을 직접 요청함");
+        ClearFollow("사용자가 채널을 직접 요청함",FollowCancel.Manual);
         var generation = Interlocked.Increment(ref _batchGeneration);
         _switches.CancelAll("더 최근의 수동 전환 요청");
-        var devices = SelectedDevices().Where(d => d.TransportAvailable && d.LocalLinkConnected != false && d.Info.Online && d.HostCount > 0).ToArray();
-        if (devices.Length == 0) { CodeEvent(code,"SKIP_LINK");_log.Write($"채널 {target + 1} 전환 생략: 선택한 기기에 사용할 수 있는 통로가 없음");PostNotice(code,[]);return; }
+        // Online=false can mean only that one idle query timed out (measured 2026-10-23: the keyboard was
+        // left out and only the mouse moved). A user's request goes to every selected device whose link is
+        // not known to be gone and whose channel feature is known; the coordinator verifies the result.
+        var devices = SelectedDevices().Where(ManualSwitchUsable).ToArray();
+        if (devices.Length == 0) { CodeEvent(code,"SKIP_LINK");_log.Write($"채널 {target + 1} 전환 생략: 선택한 기기에 사용할 수 있는 통로가 없음");LogManualExclusions(code,devices);PostNotice(code,[]);return; }
         Dispatch(() => LastRequest = $"마지막 요청: 채널 {target + 1}");
         _manual.Begin(generation,target);
         BeginNotice(code,devices.Select(d=>d.Id));
         // Start mouse writes first, before the keyboard leaves this PC.
         (HostDevice Device,SwitchOutcome Outcome)[] results;
-        try {results = await Task.WhenAll(devices.Select(async d =>
+        try
         {
-            var outcome=await SwitchWithCodeAsync(d,target,reason,code,generation).ConfigureAwait(false);
-            if(generation==Volatile.Read(ref _batchGeneration))PostNotice(code,[DeviceResult.FromOutcome(d.Id,d.Name,d.Info.Kind,outcome)]);
-            return (Device:d,Outcome:outcome);
-        })).ConfigureAwait(false);}
+            var running=devices.Select(async d =>
+            {
+                var outcome=await SwitchWithCodeAsync(d,target,reason,code,generation).ConfigureAwait(false);
+                if(generation==Volatile.Read(ref _batchGeneration))PostNotice(code,[DeviceResult.FromOutcome(d.Id,d.Name,d.Info.Kind,outcome)]);
+                return (Device:d,Outcome:outcome);
+            }).ToArray();
+            // The writes above are already issued; only now record the selected devices left out.
+            LogManualExclusions(code,devices);
+            results = await Task.WhenAll(running).ConfigureAwait(false);
+        }
         finally{_manual.Complete(generation);}
         if (generation != Volatile.Read(ref _batchGeneration)) return;
         if (results.Any(r => r.Outcome is SwitchOutcome.TargetReported or SwitchOutcome.LocalLinkClosed)) PublishDestination(target);
         Dispatch(UpdateDevices);
+    }
+    // Restoring devices are left out because channel commands wait for the cached identity check.
+    private static bool ManualSwitchUsable(HostDevice d)=>d.TransportAvailable && d.LocalLinkConnected != false && !d.Restoring && d.Info.FeatureIndex != 0 && d.HostCount > 0;
+    // Every selected device that a manual request did not write to gets its own reason. The state is
+    // read after the writes were issued, so a device that became ready meanwhile says so.
+    private void LogManualExclusions(CodeRun code,HostDevice[] included)
+    {
+        foreach(var id in SelectedIds)
+        {
+            if(included.Any(d=>d.Id==id))continue;
+            var device=_monitor.Find(id);
+            var reason=device is null?"이 PC에서 기기 통로를 찾지 못함":!device.TransportAvailable?"HID 통로 없음":
+                device.LocalLinkConnected==false?"이 PC 로컬 링크 없음(다른 호스트에 있거나 꺼짐)":
+                device.Restoring?"캐시 복원 확인 중(기기 정보 확인 전에는 채널 명령을 보내지 않음)":
+                device.Info.FeatureIndex==0 || device.HostCount<=0?"채널 전환 기능(0x1814) 미확인":"요청 시점에는 준비되지 않았고 지금은 준비됨";
+            var name=device?.Name??_settings.Value.SelectedDeviceNames.FirstOrDefault(d=>d.Id==id)?.Name??id[..Math.Min(8,id.Length)];
+            CodeEvent(code,"SKIP_LINK",CodeRole(id));
+            _log.Write($"[{name}] 채널 {code.Target+1} 수동 전환 대상에서 제외: {reason}");
+        }
     }
 
     private void OnHostChanged(HostDevice keyboard, int target)
@@ -506,7 +513,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
         BeginNotice(code,[],keyboard.Id);
         Dispatch(() => LastRequest = $"키보드 전환 감지: 채널 {target + 1}");
-        if (!TryFollow()) {lock(_followGate){if(_pendingFollow?.Code==code){CodeEvent(code,"WAIT");_log.Write("마우스 복귀 대기: 이 PC에서 확인했던 마우스의 통로가 10초 안에 준비되면 최신 전환을 보냄");}}}
+        var started=TryFollow();
+        string[] waiting;
+        lock(_followGate)
+        {
+            waiting=_pendingFollow?.Code==code?_pendingFollow.MouseIds:[];
+            if(!started && waiting.Length>0){CodeEvent(code,"WAIT");_log.Write("마우스 복귀 대기: 이 PC에서 확인했던 마우스의 통로가 10초 안에 준비되면 최신 전환을 보냄");}
+        }
+        // Ready mice were written above. A waiting mouse is often only marked unconfirmed by one idle
+        // query timeout; ask it once now instead of waiting for its next regular poll (up to 3 s).
+        foreach(var id in waiting)_monitor.RefreshNow(id,"따라 전환 대기");
     }
 
     private bool TryFollow()
@@ -516,12 +532,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (_pendingFollow is not { } intent || Volatile.Read(ref _stopping) != 0) return false;
             if (!_settings.Value.FollowEnabled || intent.MouseIds.Any(id=>!IsSelectedDevice(id)))
             {
-                ClearFollow("자동 전환 설정 또는 선택한 마우스가 바뀜");
+                ClearFollow("자동 전환 설정 또는 선택한 마우스가 바뀜",FollowCancel.Settings);
                 return false;
             }
             if (FollowPreparation.Expired(intent.At,Environment.TickCount64))
             {
-                ClearFollow("마우스 준비 대기 10초 만료. 오래된 전환을 보내지 않음");
+                ClearFollow("마우스 준비 대기 10초 만료. 오래된 전환을 보내지 않음",FollowCancel.Expired);
                 return false;
             }
             var waiting=new List<string>();var ready=new List<HostDevice>();
@@ -540,7 +556,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 ready.Add(mouse!);
             }
             _pendingFollow=waiting.Count==0?null:intent with {MouseIds=waiting.ToArray()};
-            if(ready.Count>0)_=ExecuteFollowAsync(ready.ToArray(),intent.Target,Volatile.Read(ref _batchGeneration),intent.Code,intent.At);
+            if(ready.Count>0)ExecuteFollowAsync(ready.ToArray(),intent.Target,Volatile.Read(ref _batchGeneration),intent.Code,intent.At).LogFaults(_log,"따라 전환 처리");
             return ready.Count>0;
         }
     }
@@ -570,7 +586,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             CodeEvent(code,"WAIT_IO",CodeRole(device.Id));_log.Write("출력 통로 복구 대기: 기기 선택은 유지하며 새 통로에서 같은 기기의 로컬 응답을 확인한 뒤 최신 전환만 이어감");
             PostNotice(code,[new(device.Name,null,device.Info.Kind,device.Id,DeviceNoticeState.Switching)]);
         }
-        TryFollow();return true;
+        TryFollow();ArmFollowExpiry();return true;
     }
     private void BeginNotice(CodeRun code,IEnumerable<string> switching,string? keyboard=null)
     {
@@ -597,13 +613,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         return new(device?.Name??cached?.Name??T("마우스","Mouse"),null,"마우스",id,state);
     }
 
-    private void ClearFollow(string reason)
+    // The caller classifies the cancellation; the log reason is free text (it can hold device
+    // names) and never decides the status code.
+    internal enum FollowCancel { Settings, Expired, Returned, Manual, Stopped, Power }
+    private static string CancelCode(FollowCancel cancel)=>cancel switch
+    {
+        FollowCancel.Expired=>"CAN_EXP",FollowCancel.Returned=>"CAN_RET",FollowCancel.Manual=>"CAN_MAN",
+        FollowCancel.Stopped=>"CAN_STOP",FollowCancel.Power=>"CAN_PWR",_=>"CAN_CFG",
+    };
+    private void ClearFollow(string reason,FollowCancel cancel)
     {
         lock (_followGate)
         {
             if (_pendingFollow is null) return;
-            var expired=reason.Contains("10초 만료");
-            CodeEvent(_pendingFollow.Code,expired?"CAN_EXP":reason.Contains("로컬 응답") || reason.Contains("로컬 링크")?"CAN_RET":reason.Contains("직접")?"CAN_MAN":reason.Contains("종료")?"CAN_STOP":"CAN_CFG");
+            var expired=cancel==FollowCancel.Expired;
+            CodeEvent(_pendingFollow.Code,CancelCode(cancel));
             PostNotice(_pendingFollow.Code,_pendingFollow.MouseIds.Select(id=>NoticeRow(id,expired?DeviceNoticeState.WaitExpired:DeviceNoticeState.Cancelled)).ToArray());
             _pendingFollow = null;
             _log.Write($"대기 중인 따라 전환 취소: {reason}");
@@ -648,38 +672,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         return selected.Any(d => d.Online && d.CurrentHost == channel);
     }
 
-    private string SelectionStatus(string? id, string role) => string.IsNullOrEmpty(id)
-        ? $"사용자가 {role}를 선택해 줘."
-        : Devices.FirstOrDefault(d => d.Id == id)?.Status ?? "연결 안 됨";
-
     private void UpdateDevices()
     {
         var snapshot = DeviceSnapshot;
-        _refreshing = true;
-        try
+        Devices.Clear();
+        foreach (var device in snapshot) Devices.Add(device);
+        DeviceChoices.Clear();
+        HomeDevices.Clear();
+        var visible = snapshot.ToList();
+        foreach(var saved in _settings.Value.SelectedDeviceNames.Where(s=>IsSelectedDevice(s.Id)))
+            if(visible.All(d=>d.Id!=saved.Id))visible.Add(new(saved.Id,saved.Name,"",saved.Kind,false,0,null,0));
+        foreach (var saved in new[] { (KeyboardId, _settings.Value.KeyboardName, "키보드"), (MouseId, _settings.Value.MouseName, "마우스") })
         {
-            Devices.Clear();
-            foreach (var device in snapshot) Devices.Add(device);
-            UpdateOptions(KeyboardOptions, "키보드", _settings.Value.KeyboardId, _settings.Value.KeyboardName);
-            UpdateOptions(MouseOptions, "마우스", _settings.Value.MouseId, _settings.Value.MouseName);
-            DeviceChoices.Clear();
-            HomeDevices.Clear();
-            var visible = snapshot.ToList();
-            foreach(var saved in _settings.Value.SelectedDeviceNames.Where(s=>IsSelectedDevice(s.Id)))
-                if(visible.All(d=>d.Id!=saved.Id))visible.Add(new(saved.Id,saved.Name,"",saved.Kind,false,0,null,0));
-            foreach (var saved in new[] { (KeyboardId, _settings.Value.KeyboardName, "키보드"), (MouseId, _settings.Value.MouseName, "마우스") })
-            {
-                if (!string.IsNullOrEmpty(saved.Item1) && visible.All(d => d.Id != saved.Item1))
-                    visible.Add(new DeviceInfo(saved.Item1, saved.Item2 ?? saved.Item3, "", saved.Item3, false, 0, null, 0));
-            }
-            foreach (var device in visible)
-            {
-                var choice = new DeviceChoice(this, device);
-                DeviceChoices.Add(choice);
-                if (choice.IsSelected) HomeDevices.Add(choice);
-            }
+            if (!string.IsNullOrEmpty(saved.Item1) && visible.All(d => d.Id != saved.Item1))
+                visible.Add(new DeviceInfo(saved.Item1, saved.Item2 ?? saved.Item3, "", saved.Item3, false, 0, null, 0));
         }
-        finally { _refreshing = false; }
+        foreach (var device in visible)
+        {
+            var choice = new DeviceChoice(this, device);
+            DeviceChoices.Add(choice);
+            if (choice.IsSelected) HomeDevices.Add(choice);
+        }
         NotifyAllState();
         if(!_deferUiWork)ObserveConnections(snapshot);
     }
@@ -695,60 +708,46 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if(connected.Count>0)ConnectionNoticeRequested?.Invoke(new(T("기기 연결됨","Devices connected"),connected,Interlocked.Increment(ref _connectionNoticeSequence)));
     }
 
-    private void UpdateOptions(ObservableCollection<DeviceInfo> options, string role, string? selected, string? selectedName)
-    {
-        options.Clear();
-        options.Add(new DeviceInfo("", "선택 안 함", "", role, false, 0, null, 0));
-        foreach (var device in Devices.OrderByDescending(d => d.Kind == role)) options.Add(device);
-        if (selected is not null && options.All(d => d.Id != selected))
-            options.Add(new DeviceInfo(selected, selectedName ?? role, "", role, false, 0, null, 0));
-    }
-
     private void Save(AppSettings settings, string reason)
     {
         try
         {
             StoreSettings(settings);
             Interlocked.Increment(ref _batchGeneration);
-            ClearFollow(reason);
+            ClearFollow(reason,FollowCancel.Settings);
             _switches.CancelAll(reason);
             _log.Write(reason);
             CodeSettings();
-            SettingsFeedback = "앱이 설정을 저장했어.";
             UpdateDevices();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             _log.Write($"설정 저장 실패: {error.Message}");
-            SettingsFeedback = "앱이 설정을 저장하지 못했어. 연결 로그에서 원인을 확인해 줘.";
         }
         NotifyAllState();
     }
 
     private void ChooseExport()
     {
-        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "앱이 로그를 함께 기록할 폴더 선택", Multiselect = false };
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = T("앱이 로그를 함께 기록할 폴더 선택","Choose a folder for EasySwitch to save logs to"), Multiselect = false };
         if (dialog.ShowDialog() == true) SetExport(dialog.FolderName);
     }
 
     private void SetExport(string? path)
     {
-        if(_deferUiWork){_=ConfigureExportAsync(path,path is not null && (_settings.Value.ExportEnabled || _enableAfterFolder));return;}
+        if(_deferUiWork){ConfigureExportAsync(path,path is not null && (_settings.Value.ExportEnabled || _enableAfterFolder)).LogFaults(_log,"로그 폴더 변경 처리");return;}
         var previous = _settings.Value;
         try
         {
             var enabled=path is not null && (previous.ExportEnabled || _enableAfterFolder);
             _log.SetExportDirectory(enabled?path:null);
             StoreSettings(previous with { ExportDirectory = path, ExportEnabled=enabled });
-            SettingsFeedback = path is null ? "앱이 로컬 폴더에만 로그를 기록해." : "앱이 선택한 폴더에도 새 로그를 자동으로 기록해.";
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         {
             try { _log.SetExportDirectory(previous.ExportEnabled?previous.ExportDirectory:null); } catch (Exception restore) { _log.Write($"외부 기록 복구 실패: {restore.Message}"); }
             _log.Write($"로그 폴더 변경 실패: {error.Message}");
-            SettingsFeedback = "앱이 로그 폴더를 변경하지 못했어. 연결 로그에서 원인을 확인해 줘.";
         }
-        Notify(nameof(ExportPath));
         Notify(nameof(ExportLabel));
         Notify(nameof(HasExportFolder));
         Notify(nameof(LogFolderEnabled));
@@ -760,13 +759,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         try
         {
             await _log.QueueWork(()=>_log.SetExportDirectory(enabled?path:null));
-            if(generation!=_exportGeneration)return;
-            SettingsFeedback=enabled?"앱이 선택한 폴더에도 새 로그를 자동으로 기록해.":"앱이 로컬 폴더에만 로그를 기록해.";
         }
         catch(Exception error)when(error is IOException or UnauthorizedAccessException or ArgumentException)
         {
             _log.Post("로그 폴더 변경 실패: "+error.Message);
-            if(generation==_exportGeneration){StoreSettings(_settings.Value with{ExportDirectory=previous.ExportDirectory,ExportEnabled=previous.ExportEnabled});SettingsFeedback="앱이 로그 폴더를 변경하지 못했어. 연결 로그에서 원인을 확인해 줘.";NotifyAllState();}
+            if(generation==_exportGeneration){StoreSettings(_settings.Value with{ExportDirectory=previous.ExportDirectory,ExportEnabled=previous.ExportEnabled});NotifyAllState();}
         }
     }
     private async void ExportLog()
@@ -782,12 +779,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if(picker.ShowDialog()!=true)return;
         try{if(_service is not null)await _service.ExportAsync(picker.FileName,true);else _log.ExportCodes(picker.FileName);}
         catch(Exception error)when(error is IOException or UnauthorizedAccessException or TimeoutException or OperationCanceledException){_log.Write($"코드 로그 내보내기 실패: {error.Message}");}
-    }
-
-    private void OpenFolder(string path)
-    {
-        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); }
-        catch (Exception error) { _log.Write($"로그 폴더 열기 실패: {error.Message}"); }
     }
 
     private void OnLog(LogEntry entry)
@@ -829,19 +820,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         else _dispatcher.BeginInvoke(action);
     }
     internal void ReportNoticeError(Exception error)=>_log.Write($"토스트 표시 오류: {error}");
-    private void NotifyAllState()
-    {
-        Notify("");
-        StateChanged?.Invoke();
-    }
-    private static string? EmptyToNull(string? text) => string.IsNullOrEmpty(text) ? null : text;
+    internal void WriteUiLog(string message)=>_log.Write(message);
+    private void NotifyAllState()=>Notify("");
     private void Notify([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
     public async ValueTask DisposeAsync()
     {
         Interlocked.Exchange(ref _stopping, 1);
-        _followExpiry.Stop();
-        ClearFollow("앱 종료");
+        _followExpiryAllowed=false;_followExpiry.Stop();
+        ClearFollow("앱 종료",FollowCancel.Stopped);
         await _switches.StopAsync("앱 종료").ConfigureAwait(false);
         await _monitor.DisposeAsync().ConfigureAwait(false);
         _log.Added -= OnLog;
@@ -870,16 +857,12 @@ public sealed class DeviceChoice
     public string HomeStatus => !Info.Online ? "연결 안 됨" : IsKeyboard
         ? _owner.FollowEnabled ? "키보드: 전환 감지 중" : "키보드: 연결됨"
         : "마우스: 전환 준비됨";
-    public ICommand UseAsKeyboardCommand { get; }
-    public ICommand UseAsMouseCommand { get; }
     public ICommand ToggleCommand { get; }
     public DeviceChoice(MainViewModel owner, DeviceInfo info)
     {
         _owner = owner;
         Info = info;
         ToggleCommand = new RelayCommand(_ => Toggle());
-        UseAsKeyboardCommand = new RelayCommand(_ => owner.KeyboardId = owner.KeyboardId == info.Id ? "" : info.Id);
-        UseAsMouseCommand = new RelayCommand(_ => owner.MouseId = owner.MouseId == info.Id ? "" : info.Id);
     }
     public void Toggle()
     {
@@ -894,4 +877,12 @@ public sealed class RelayCommand(Action<object?> execute) : ICommand
     public event EventHandler? CanExecuteChanged { add { } remove { } }
     public bool CanExecute(object? parameter) => true;
     public void Execute(object? parameter) => execute(parameter);
+}
+
+// A switch reason is also the reason field of a service request, so the UI and the service send
+// these exact strings. The status-code source letter is looked up from them, not from wording.
+internal static class SwitchRequestSource
+{
+    internal const string HomeTile="홈 채널 버튼", Command="채널 버튼", Tray="트레이 채널 버튼", Floating="플로팅 채널 버튼";
+    internal static string Code(string reason)=>reason switch { Tray=>"T", Floating=>"P", _=>"B" };
 }

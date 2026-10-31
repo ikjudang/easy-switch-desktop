@@ -44,7 +44,12 @@ public sealed class SettingsStore
     private readonly Action<AppSettings>? _persistOverride;
     public AppSettings Value => Volatile.Read(ref _value);
     internal string StorageDirectory=>Path.GetDirectoryName(_path)!;
+    internal string BackupPath=>_path+".bak";
     public string? LoadError { get; private set; }
+    /// <summary>The main file was missing or unreadable and the last good backup was loaded instead of defaults.</summary>
+    public bool RestoredFromBackup { get; private set; }
+    // An unreadable main file is kept under its own name on the next save instead of being overwritten.
+    private bool _preserveUnreadable;
     public event Action<AppSettings>? Saved;
     public event Action<Exception>? SaveFailed;
 
@@ -53,14 +58,28 @@ public sealed class SettingsStore
         directory ??= DataDirectory;
         Directory.CreateDirectory(directory);
         _path = Path.Combine(directory, "settings.json");
+        var main=TryLoad(_path,out var value,out var error);
+        if(main==LoadResult.Loaded){_value=value!;return;}
+        if(main==LoadResult.Failed){LoadError=error;_preserveUnreadable=true;}
+        // A half-written or lost main file must not silently turn keyboard following off: use the last good save.
+        var backup=TryLoad(BackupPath,out var saved,out var backupError);
+        if(backup==LoadResult.Loaded)
+        {
+            _value=saved!;RestoredFromBackup=true;
+            LoadError=(LoadError??"설정 파일이 없음")+". 마지막으로 정상 저장된 백업(settings.json.bak)을 사용함";
+        }
+        else if(backup==LoadResult.Failed)LoadError=(LoadError??"설정 파일이 없음")+". 백업도 읽지 못함: "+backupError;
+    }
+    private enum LoadResult{Missing,Loaded,Failed}
+    private static LoadResult TryLoad(string path,out AppSettings? value,out string? error)
+    {
+        value=null;error=null;
         try
         {
-            if (File.Exists(_path)) _value = Normalize(JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(_path)) ?? new());
+            if(!File.Exists(path))return LoadResult.Missing;
+            value=Normalize(JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path))??new());return LoadResult.Loaded;
         }
-        catch (Exception error) when (error is IOException or JsonException or UnauthorizedAccessException)
-        {
-            LoadError = error.Message;
-        }
+        catch(Exception failure)when(failure is IOException or JsonException or UnauthorizedAccessException){error=failure.Message;return LoadResult.Failed;}
     }
     internal SettingsStore(string directory,Action<AppSettings> persist):this(directory){_persistOverride=persist;}
 
@@ -102,7 +121,7 @@ public sealed class SettingsStore
             try
             {
                 if(_persistOverride is not null)_persistOverride(pending.Value);
-                else{var temp=_path+".tmp";File.WriteAllText(temp,JsonSerializer.Serialize(pending.Value,new JsonSerializerOptions{WriteIndented=true}));File.Move(temp,_path,true);}
+                else Persist(pending.Value);
                 lock(_saveGate){if(pending.Revision>=_valueRevision){Volatile.Write(ref _value,pending.Value);_valueRevision=pending.Revision;}}
                 foreach(var waiter in pending.Waiters)waiter.TrySetResult();
             }
@@ -112,6 +131,23 @@ public sealed class SettingsStore
                 try{SaveFailed?.Invoke(error);}catch(Exception){}
             }
         }
+    }
+    // Runs on the save worker thread. The new content reaches the disk before it replaces the old file,
+    // and the replaced file becomes the backup, so a power loss leaves either version readable.
+    private void Persist(AppSettings value)
+    {
+        var temp=_path+".tmp";
+        var bytes=JsonSerializer.SerializeToUtf8Bytes(value,new JsonSerializerOptions{WriteIndented=true});
+        using(var stream=new FileStream(temp,FileMode.Create,FileAccess.Write,FileShare.None)){stream.Write(bytes);stream.Flush(true);}
+        if(!File.Exists(_path)){File.Move(temp,_path,true);_preserveUnreadable=false;return;}
+        var keep=_preserveUnreadable?_path+".unreadable-"+DateTime.Now.ToString("yyyyMMdd-HHmmss-fff",System.Globalization.CultureInfo.InvariantCulture):BackupPath;
+        try{File.Replace(temp,_path,keep,true);}
+        catch(Exception error)when(error is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            // Saving the settings matters more than refreshing the backup.
+            File.Move(temp,_path,true);
+        }
+        _preserveUnreadable=false;
     }
     private static AppSettings Normalize(AppSettings v)=>v with
     {

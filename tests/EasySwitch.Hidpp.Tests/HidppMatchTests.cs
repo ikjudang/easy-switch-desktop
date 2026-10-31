@@ -32,6 +32,16 @@ public class HidppMatchTests
         Assert.Equal(ResponseKind.ErrorSolaarLayout, HidppMatch.Classify(request, Hex.Parse("10 02 8F 7F 0A 08 00"))); // 수신기 1.0 에러
     }
 
+    [Fact(DisplayName = "요청 byte2와 byte3이 같으면 에러 배치를 가를 수 없다")]
+    public void LayoutIsAmbiguousWhenFeatureEqualsFuncSw()
+    {
+        // MX Mechanical의 0x1814 index 09에 getHostInfo(함수 0, software id 9)를 보내면 두 배치가 같은 바이트다.
+        var ambiguous = ChangeHostFeature.BuildGetHostInfo(0x09, 3, softwareId: 9).ToBytes();
+        Assert.True(HidppMatch.ErrorLayoutAmbiguous(ambiguous));
+        Assert.Equal(ResponseKind.ErrorSolaarLayout, HidppMatch.Classify(ambiguous, Hex.Parse("10 03 FF 09 09 08 00")));
+        Assert.False(HidppMatch.ErrorLayoutAmbiguous(RootFeature.BuildGetFeature(0x1814, 3, 9).ToBytes()));
+    }
+
     [Fact(DisplayName = "수신기 레지스터 읽기 응답도 sub_id·주소 에코로 짝짓는다")]
     public void RegisterReadResponse() =>
         Assert.Equal(ResponseKind.Response,

@@ -30,6 +30,10 @@ public partial class App : Application
     private Forms.NotifyIcon? _tray;
     private System.Drawing.Icon? _icon;
     private bool _exiting;
+    private bool _english;
+    private readonly ErrorDialogGate _errorDialogs=new();
+    // Before the view model exists, the saved language decides the dialog language.
+    private string T(string ko,string en)=>(_viewModel?.English ?? _english)?en:ko;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
@@ -48,7 +52,7 @@ public partial class App : Application
             var check=Array.IndexOf(e.Args,"--service-check");var folder=Path.GetFullPath(check+1<e.Args.Length?e.Args[check+1]:"artifacts/service-check");Directory.CreateDirectory(folder);
             try
             {
-                using var log=new AppLog(Path.Combine(folder,"logs"));await using var client=new ServiceClient(log);
+                using var log=new AppLog(Path.Combine(folder,"logs"));await using var client=new ServiceClient(log){CursorFile=null};
                 var ready=new TaskCompletionSource<ServiceSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);client.SnapshotReceived+=state=>ready.TrySetResult(state);client.Start();
                 var snapshot=await ready.Task.WaitAsync(TimeSpan.FromSeconds(8));
                 File.WriteAllText(Path.Combine(folder,"service.json"),System.Text.Json.JsonSerializer.Serialize(new{mode="Read-only service check; no channel commands",installation=ServiceRegistration.Installation,state=snapshot},new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));Shutdown();
@@ -170,7 +174,15 @@ public partial class App : Application
                 { Shutdown(); return; }
             }
             catch(Exception error) when(error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or WaitHandleCannotBeOpenedException)
-            { MessageBox.Show(error.Message,"Easy Switch",MessageBoxButton.OK,MessageBoxImage.Information);Shutdown(1);return; }
+            {
+                // The exception text is diagnostic; it goes to a log file, the dialog says what to do.
+                try{_english=new SettingsStore().Value.Language=="en";}catch(Exception){}
+                try{using var log=new AppLog();log.Write($"실행 중인 앱 확인 실패로 시작 중단: {error}");}catch(Exception){}
+                MessageBox.Show(T("이미 실행 중인 EasySwitch를 확인하지 못해 새로 시작하지 않았습니다. 트레이에서 EasySwitch를 종료한 뒤 다시 실행해 주세요.",
+                    "EasySwitch did not start because it could not confirm the copy that is already running. Please quit EasySwitch from the tray and start it again."),
+                    "Easy Switch",MessageBoxButton.OK,MessageBoxImage.Information);
+                Shutdown(1);return;
+            }
         }
         var settingsTask=Task.Run(()=>new SettingsStore(startupDirectory is null?null:Path.Combine(startupDirectory,"fixtures")));
         var logTask=Task.Run(()=>new AppLog(startupDirectory is null?null:Path.Combine(startupDirectory,"fixtures","logs")));
@@ -186,16 +198,21 @@ public partial class App : Application
             await AdvanceSplash(.08);
             startup.Mark("SPLASH");
             var settings = await settingsTask;
+            _english=settings.Value.Language=="en";
             await AdvanceSplash(.22);
             _log = await logTask;startup.Mark("LOCAL");
-            if (settings.LoadError is { } settingsError) _log.Write($"이전 설정을 읽지 못해 기본값 사용: {settingsError}");
+            CrashRecorder.Attach(_log);
+            if (settings.LoadError is { } settingsError) _log.Write($"이전 설정을 읽지 못해 {(settings.RestoredFromBackup?"백업 설정으로 시작함":"기본값 사용")}: {settingsError}");
             try { if(settings.Value.ExportEnabled && settings.Value.ExportDirectory is { } exportDirectory)await Task.Run(()=>_log.SetExportDirectory(exportDirectory)); }
             catch (Exception error) { _log.Write($"외부 로그 폴더 열기 실패: {error.Message}. 로컬 파일은 계속 기록함"); }
             DispatcherUnhandledException += (_, args) =>
             {
                 try { _log.Write($"처리하지 못한 오류: {args.Exception}"); } catch (Exception) { }
                 args.Handled = true;
-                MessageBox.Show("앱에서 오류가 발생했어. 연결 로그 파일에서 자세한 내용을 확인해 줘.", "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error);
+                // The dialog's own message loop can raise more errors; every one is logged above.
+                if (!_errorDialogs.TryEnter(args.Exception)) return;
+                try { MessageBox.Show(T("앱에서 오류가 발생했습니다. 연결 로그에서 자세한 내용을 확인해 주세요.", "An error occurred in EasySwitch. Please check the connection log for details."), "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error); }
+                finally { _errorDialogs.Exit(); }
             };
             await AdvanceSplash(.38);
             _viewModel = new MainViewModel(settings, _log, Dispatcher);
@@ -209,7 +226,6 @@ public partial class App : Application
             }
             _viewModel.Start();startup.Mark("MONITOR");
             await AdvanceSplash(.55);
-            _viewModel.ExitRequested += RequestExit;
             var trayStart=e.Args.Contains("--tray");
             if(!trayStart)EnsureMainWindow();
             startup.Mark("WINDOW");
@@ -245,8 +261,12 @@ public partial class App : Application
         }
         catch (Exception error)
         {
-            try { _log?.Write($"앱 시작 실패: {error}"); } catch (Exception) { }
-            MessageBox.Show($"앱을 시작하지 못했어.\n{error.Message}", "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error);
+            var logged = false;
+            try { if (_log is not null) { _log.Write($"앱 시작 실패: {error}"); logged = true; } } catch (Exception) { }
+            MessageBox.Show(logged
+                ? T("앱을 시작하지 못했습니다. 로그 파일에서 자세한 내용을 확인한 뒤 앱을 다시 실행해 주세요.", "EasySwitch could not start. Please check the log file for details and start the app again.")
+                : T("앱을 시작하지 못했습니다. 앱을 다시 실행해 주세요.", "EasySwitch could not start. Please start the app again."),
+                "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
         finally { splash?.Close(); if(_window is null && ReferenceEquals(MainWindow,splash))MainWindow=null; }
@@ -343,10 +363,12 @@ public partial class App : Application
         var menu=BuildTrayMenu(_viewModel,ShowMainWindow,RequestExit);
         if(_window is not null)
         {
-            // A foreground owner lets Windows dismiss this menu when the user clicks elsewhere.
             SetForegroundWindow(new WindowInteropHelper(_window).Handle);
             menu.PlacementTarget=_window;
         }
+        // A click elsewhere dismisses the menu only while its own window is in the foreground.
+        // The usual tray state has no main window, so bring the menu's window forward itself.
+        menu.Opened+=(_,_)=>{if(PresentationSource.FromVisual(menu) is HwndSource source)SetForegroundWindow(source.Handle);};
         menu.IsOpen=true;
     }
 
@@ -365,7 +387,7 @@ public partial class App : Application
         for (var target = 0; target < 3; target++)
         {
             var captured = target;
-            Add(viewModel.T($"채널 {target + 1}로 전환",$"Switch to channel {target+1}"), () => _ = viewModel.SwitchAsync(captured, "트레이 채널 버튼"), viewModel.CanSwitch);
+            Add(viewModel.T($"채널 {target + 1}로 전환",$"Switch to channel {target+1}"), () => viewModel.RequestSwitch(captured, SwitchRequestSource.Tray), viewModel.CanSwitch);
         }
         menu.Items.Add(new Separator());
 #if EASYSWITCH_FLOATING
@@ -423,4 +445,18 @@ public partial class App : Application
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+}
+
+// One error dialog at a time, once per kind of failure. A dialog runs a nested message loop that
+// can raise the same failure again; stacked or repeated dialogs would bury the app.
+internal sealed class ErrorDialogGate
+{
+    private readonly HashSet<string> _shown=[];
+    private bool _open;
+    internal bool TryEnter(Exception error)
+    {
+        if(_open || !_shown.Add(error.GetType().FullName+"|"+error.TargetSite))return false;
+        _open=true;return true;
+    }
+    internal void Exit()=>_open=false;
 }

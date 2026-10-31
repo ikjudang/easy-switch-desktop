@@ -144,16 +144,26 @@ public static class ReceiverMessages
         [HidppConstants.ReportIdShort, HidppConstants.DeviceIndexDirect, HidppConstants.Hidpp10GetShortRegister, (byte)address, 0, 0, 0];
 
     /// <summary>
-    /// 기기 연결 상태 알림(0x41): [report][기기 번호][0x41][프로토콜][플래그][무선 PID 하위][무선 PID 상위].
-    /// 유니파잉에서는 플래그 bit 6이 1이면 "링크 없음"이다 — 볼트도 같은지는 미실측.
+    /// 기기 연결 상태 알림(0x41): [0x10][기기 번호 1..6][0x41][프로토콜][플래그][무선 PID 하위][무선 PID 상위].
+    /// 실측한 볼트·유니파잉 알림은 모두 short(0x10) 리포트였다.
+    /// long(0x11) 리포트의 byte[2]=0x41은 feature index 0x41인 HID++ 2.0 이벤트·응답이므로 알림으로 읽지 않는다.
+    /// 플래그 bit 6이 1이면 "링크 없음"이다(볼트 C548·유니파잉 C52B 실측).
     /// </summary>
     public static DeviceConnectionNotice? ParseDeviceConnection(ReadOnlySpan<byte> raw)
     {
-        if (raw.Length < HidppConstants.ShortLength) return null;
-        if (raw[0] != HidppConstants.ReportIdShort && raw[0] != HidppConstants.ReportIdLong) return null;
-        if (raw[2] != HidppConstants.Hidpp10DeviceConnection) return null;
+        if (!IsShortSlotNotification(raw, HidppConstants.Hidpp10DeviceConnection)) return null;
         return new DeviceConnectionNotice(raw[1], raw[3], raw[4], raw[5] | (raw[6] << 8));
     }
+
+    /// <summary>
+    /// 기기 등록 해제 알림(0x40): [0x10][기기 번호 1..6][0x40]…. 0x41과 같은 이유로 short 리포트와 슬롯 범위만 받는다.
+    /// </summary>
+    public static bool IsDeviceDisconnection(ReadOnlySpan<byte> raw) =>
+        IsShortSlotNotification(raw, HidppConstants.Hidpp10DeviceDisconnection);
+
+    private static bool IsShortSlotNotification(ReadOnlySpan<byte> raw, int subId) =>
+        raw.Length >= HidppConstants.ShortLength && raw[0] == HidppConstants.ReportIdShort &&
+        raw[1] is >= HidppConstants.ReceiverFirstDevice and <= HidppConstants.ReceiverLastDevice && raw[2] == subId;
 }
 
 /// <param name="DeviceIndex">수신기 슬롯(1..6).</param>

@@ -9,6 +9,8 @@ namespace EasySwitch.Windows.Controls;
 internal sealed class LanguagePicker : ComboBox
 {
     internal object? PlacementDetails {get;private set;}
+    // Subscribed once: OnApplyTemplate can run again for a new template.
+    public LanguagePicker()=>Unloaded+=(_,_)=>IsDropDownOpen=false;
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
@@ -25,6 +27,5 @@ internal sealed class LanguagePicker : ComboBox
             PlacementDetails=new{size,target,offset,origin,dpi,position};
             return [new(new((position.X-origin.X/dpi-8)*dpi,(position.Y-origin.Y/dpi-8)*dpi),PopupPrimaryAxis.None)];
         };
-        Unloaded+=(_,_)=>IsDropDownOpen=false;
     }
 }
