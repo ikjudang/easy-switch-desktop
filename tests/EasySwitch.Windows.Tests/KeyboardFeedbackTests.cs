@@ -3,7 +3,9 @@ using System.Reflection;
 using System.Text.Json;
 using System.Windows.Threading;
 using EasySwitch.Core;
+#if EASYSWITCH_FLOATING
 using EasySwitch.Windows.Floating;
+#endif
 using EasySwitch.Windows.Hardware;
 using EasySwitch.Windows.Infrastructure;
 using EasySwitch.Windows.Service;
@@ -19,7 +21,11 @@ public sealed class KeyboardFeedbackTests
         var root=Temp();var store=new SettingsStore(root);using var log=new AppLog(Path.Combine(root,"logs"));await using var vm=new MainViewModel(store,log,Dispatcher.CurrentDispatcher);vm.UsePreviewDevices([]);
         Assert.False(vm.FloatingAlwaysShow);var changed=0;vm.FloatingSettingsChanged+=()=>changed++;
         vm.FloatingAlwaysShow=true;vm.FloatingAlwaysShow=true;
-        Assert.Equal(1,changed);Assert.True(new SettingsStore(root).Value.FloatingAlwaysShow);Assert.True(FloatingPreferences.From(store.Value).AlwaysShow);Assert.False(vm.FloatingEnabled);
+        Assert.Equal(1,changed);Assert.True(new SettingsStore(root).Value.FloatingAlwaysShow);
+#if EASYSWITCH_FLOATING
+        Assert.True(FloatingPreferences.From(store.Value).AlwaysShow);
+#endif
+        Assert.False(vm.FloatingEnabled);
         Assert.False(EnginePreferences.From(store.Value).Apply(new()).FloatingAlwaysShow);
     }
     [Fact]

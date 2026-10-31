@@ -13,6 +13,10 @@ internal static class Program
         if(args.Contains("--install-service"))return InstallService(args);
         if(args.Contains("--uninstall-service"))return ServiceInstaller.Uninstall();
         if(args.Contains("--service"))return RunService();
+#if EASYSWITCH_DIAGNOSTICS
+        if(args.Contains("--service-startup-smoke") && !args.Contains("--wpf-service-startup-smoke"))
+            return ServiceStartupFixture.RunAsync(args).GetAwaiter().GetResult();
+#endif
         return RunWpf();
     }
 

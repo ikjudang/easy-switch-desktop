@@ -14,6 +14,14 @@
     <!-- The UI branch retains WPF startup/DPI; service modes bypass Application initialization. -->
     <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
+  <!-- The floating button ships only in release builds. The public source omits Floating/ and
+       builds the rest of the app; these symbols follow which sources are present. -->
+  <PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)Floating/FloatingRuntime.cs')">
+    <DefineConstants>$(DefineConstants);EASYSWITCH_FLOATING</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)PreviewRenderer.cs')">
+    <DefineConstants>$(DefineConstants);EASYSWITCH_DIAGNOSTICS</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.0" />
     <!-- Keep touch support on the WM_POINTER stack. Legacy WISP tablet enumeration can block

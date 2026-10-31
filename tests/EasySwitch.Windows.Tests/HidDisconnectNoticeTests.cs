@@ -3,7 +3,7 @@ using System.Reflection;
 using EasySwitch.Core;
 using EasySwitch.Hidpp;
 using EasySwitch.Probe;
-using EasySwitch.Windows.Floating;
+using EasySwitch.Windows.Notices;
 using EasySwitch.Windows.Hardware;
 using EasySwitch.Windows.Infrastructure;
 

@@ -6,6 +6,10 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+  <!-- Mirrors the app project: floating-button checks compile only when its sources are present. -->
+  <PropertyGroup Condition="Exists('$(MSBuildThisFileDirectory)../../src/EasySwitch.Windows/Floating/FloatingRuntime.cs')">
+    <DefineConstants>$(DefineConstants);EASYSWITCH_FLOATING</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />

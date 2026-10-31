@@ -3,7 +3,10 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using EasySwitch.Windows.Infrastructure;
+using EasySwitch.Windows.Notices;
+#if EASYSWITCH_FLOATING
 using EasySwitch.Windows.Floating;
+#endif
 using EasySwitch.Windows.Service;
 using Forms = System.Windows.Forms;
 
@@ -19,7 +22,10 @@ public partial class App : Application
     private MainWindow.ViewState? _mainViewState;
     private Rect? _mainBounds;
     private int _mainGeneration;
+#if EASYSWITCH_FLOATING
+    // The floating button ships only in release builds; the public source builds without it.
     private FloatingRuntime? _floating;
+#endif
     private NoticePresenter? _notices;
     private Forms.NotifyIcon? _tray;
     private System.Drawing.Icon? _icon;
@@ -29,6 +35,14 @@ public partial class App : Application
     {
         var startup=new StartupTiming();startup.Mark("RESOURCES");
         base.OnStartup(e);
+        var memoryTest=e.Args.Contains("--memory-test");
+        if(memoryTest || e.Args.Contains("--software-render-smoke"))System.Windows.Media.RenderOptions.ProcessRenderMode=System.Windows.Interop.RenderMode.SoftwareOnly;
+#if EASYSWITCH_FLOATING
+        if(memoryTest || e.Args.Contains("--compact-drag-host-smoke"))FloatingController.CompactDragHostForMemoryProbe=true;
+#endif
+#if EASYSWITCH_DIAGNOSTICS
+        if(e.Args.Contains("--service-startup-smoke")){Shutdown(await ServiceStartupFixture.RunAsync(e.Args));return;}
+#endif
         if(e.Args.Contains("--service-check"))
         {
             var check=Array.IndexOf(e.Args,"--service-check");var folder=Path.GetFullPath(check+1<e.Args.Length?e.Args[check+1]:"artifacts/service-check");Directory.CreateDirectory(folder);
@@ -43,6 +57,52 @@ public partial class App : Application
             return;
         }
         if(e.Args.Contains("--instance-fixture")) { RunInstanceFixture(e.Args); return; }
+#if EASYSWITCH_DIAGNOSTICS
+        if(e.Args.Contains("--resource-usage-smoke"))
+        {
+            var index=Array.IndexOf(e.Args,"--resource-usage-smoke");
+            var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/resource-usage");
+            Directory.CreateDirectory(directory);
+            try{await PreviewRenderer.ResourceUsageSmoke(directory);Shutdown();}
+            catch(Exception error){File.WriteAllText(Path.Combine(directory,"error.txt"),error.ToString());Shutdown(1);}
+            return;
+        }
+        if(e.Args.Contains("--presentation-memory-smoke"))
+        {
+            var index=Array.IndexOf(e.Args,"--presentation-memory-smoke");
+            var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/presentation-memory");
+            Directory.CreateDirectory(directory);
+            try{await PreviewRenderer.PresentationMemorySmoke(directory);Shutdown();}
+            catch(Exception error){File.WriteAllText(Path.Combine(directory,"error.txt"),error.ToString());Shutdown(1);}
+            return;
+        }
+        if(e.Args.Contains("--splash-memory-smoke"))
+        {
+            var index=Array.IndexOf(e.Args,"--splash-memory-smoke");
+            var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/splash-memory");
+            Directory.CreateDirectory(directory);
+            try{await PreviewRenderer.SplashMemorySmoke(directory);Shutdown();}
+            catch(Exception error){File.WriteAllText(Path.Combine(directory,"error.txt"),error.ToString());Shutdown(1);}
+            return;
+        }
+        if(e.Args.Contains("--floating-canvas-memory-smoke"))
+        {
+            var index=Array.IndexOf(e.Args,"--floating-canvas-memory-smoke");
+            var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/floating-canvas-memory");
+            Directory.CreateDirectory(directory);
+            try{await PreviewRenderer.FloatingCanvasMemorySmoke(directory,e.Args.Contains("--animation-first-smoke"));Shutdown();}
+            catch(Exception error){File.WriteAllText(Path.Combine(directory,"error.txt"),error.ToString());Shutdown(1);}
+            return;
+        }
+        if(e.Args.Contains("--floating-far-drag-smoke"))
+        {
+            var index=Array.IndexOf(e.Args,"--floating-far-drag-smoke");
+            var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/floating-far-drag");
+            Directory.CreateDirectory(directory);
+            try{await PreviewRenderer.FloatingFarDragSmoke(directory,e.Args.Contains("--always-show-smoke"),e.Args.Contains("--delete-mode-smoke"));Shutdown();}
+            catch(Exception error){File.WriteAllText(Path.Combine(directory,"error.txt"),error.ToString());Shutdown(1);}
+            return;
+        }
         if(e.Args.Contains("--animation-performance-smoke"))
         {
             var index=Array.IndexOf(e.Args,"--animation-performance-smoke");var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/animation-performance");Directory.CreateDirectory(directory);
@@ -68,6 +128,12 @@ public partial class App : Application
             var index=Array.IndexOf(e.Args,"--tray-settings-smoke");var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/tray-settings");Directory.CreateDirectory(directory);
             try{PreviewRenderer.TraySettingsSmoke(directory);Shutdown();}catch(Exception error){File.WriteAllText(Path.Combine(directory,"error.txt"),error.ToString());Shutdown(1);}return;
         }
+        if(e.Args.Contains("--log-toolbar-smoke"))
+        {
+            var index=Array.IndexOf(e.Args,"--log-toolbar-smoke");var directory=Path.GetFullPath(index+1<e.Args.Length?e.Args[index+1]:"artifacts/log-toolbar");
+            Directory.CreateDirectory(directory);
+            try{PreviewRenderer.LogToolbarSmoke(directory);Shutdown();}catch(Exception error){File.WriteAllText(Path.Combine(directory,"error.txt"),error.ToString());Shutdown(1);}return;
+        }
         if(e.Args.Contains("--drawing-benchmark"))
         {
             var i=Array.IndexOf(e.Args,"--drawing-benchmark");
@@ -78,7 +144,7 @@ public partial class App : Application
             var smoke=e.Args.Contains("--overlay-smoke");
             var index = Array.IndexOf(e.Args, smoke?"--overlay-smoke":"--render");
             var directory = index + 1 < e.Args.Length ? e.Args[index + 1] : Path.Combine(Environment.CurrentDirectory, "artifacts", "render");
-            try { if(smoke)PreviewRenderer.NativeSmoke(Path.GetFullPath(directory));else PreviewRenderer.RenderAll(Path.GetFullPath(directory)); Shutdown(); }
+            try { if(smoke)PreviewRenderer.NativeSmoke(Path.GetFullPath(directory),e.Args.Contains("--floating-only-smoke"));else PreviewRenderer.RenderAll(Path.GetFullPath(directory)); Shutdown(); }
             catch (Exception error)
             {
                 Directory.CreateDirectory(directory);
@@ -87,7 +153,11 @@ public partial class App : Application
             }
             return;
         }
-        var startupIndex=Array.IndexOf(e.Args,"--startup-smoke");
+#endif
+        var lifecycle=e.Args.Contains("--main-lifecycle-smoke");
+        var trayBaseline=e.Args.Contains("--tray-baseline-smoke");
+        var packageMemory=e.Args.Contains("--package-memory-smoke");
+        var startupIndex=Array.IndexOf(e.Args,packageMemory?"--package-memory-smoke":trayBaseline?"--tray-baseline-smoke":lifecycle?"--main-lifecycle-smoke":"--startup-smoke");
         var startupDirectory=startupIndex>=0?Path.GetFullPath(startupIndex+1<e.Args.Length?e.Args[startupIndex+1]:"artifacts/startup"):null;
         if(startupDirectory is null)
         {
@@ -104,13 +174,19 @@ public partial class App : Application
         }
         var settingsTask=Task.Run(()=>new SettingsStore(startupDirectory is null?null:Path.Combine(startupDirectory,"fixtures")));
         var logTask=Task.Run(()=>new AppLog(startupDirectory is null?null:Path.Combine(startupDirectory,"fixtures","logs")));
-        var splash=new StartupSplash();splash.Show();
+        var skipSplash=startupDirectory is not null && e.Args.Contains("--skip-splash-smoke");
+        var splash=skipSplash?null:new StartupSplash();splash?.Show();
+        async Task AdvanceSplash(double value)
+        {
+            if(splash is not null)await splash.AdvanceAsync(value);
+            else await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+        }
         try
         {
-            await splash.AdvanceAsync(.08);
+            await AdvanceSplash(.08);
             startup.Mark("SPLASH");
             var settings = await settingsTask;
-            await splash.AdvanceAsync(.22);
+            await AdvanceSplash(.22);
             _log = await logTask;startup.Mark("LOCAL");
             if (settings.LoadError is { } settingsError) _log.Write($"이전 설정을 읽지 못해 기본값 사용: {settingsError}");
             try { if(settings.Value.ExportEnabled && settings.Value.ExportDirectory is { } exportDirectory)await Task.Run(()=>_log.SetExportDirectory(exportDirectory)); }
@@ -121,7 +197,7 @@ public partial class App : Application
                 args.Handled = true;
                 MessageBox.Show("앱에서 오류가 발생했어. 연결 로그 파일에서 자세한 내용을 확인해 줘.", "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error);
             };
-            await splash.AdvanceAsync(.38);
+            await AdvanceSplash(.38);
             _viewModel = new MainViewModel(settings, _log, Dispatcher);
             _viewModel.EnableDeferredUiWork();
             _notices = new NoticePresenter(_viewModel);
@@ -132,24 +208,40 @@ public partial class App : Application
                 if(ServiceRegistration.Installed)_viewModel.AttachService(new ServiceClient(_log));
             }
             _viewModel.Start();startup.Mark("MONITOR");
-            await splash.AdvanceAsync(.55);
+            await AdvanceSplash(.55);
             _viewModel.ExitRequested += RequestExit;
             var trayStart=e.Args.Contains("--tray");
             if(!trayStart)EnsureMainWindow();
             startup.Mark("WINDOW");
-            await splash.AdvanceAsync(.70);
-            _floating = new FloatingRuntime(_viewModel,Dispatcher,_log,ShowMainWindow);
-            _floating.SetMainWindow(_window);
+            await AdvanceSplash(.70);
+#if EASYSWITCH_FLOATING
+            if(!(startupDirectory is not null && e.Args.Contains("--skip-floating-smoke") && !_viewModel.FloatingEnabled))
+            {
+                _floating = new FloatingRuntime(_viewModel,Dispatcher,_log,ShowMainWindow);
+                _floating.SetMainWindow(_window);
+            }
+#endif
             CreateTray();
-            await splash.AdvanceAsync(.88);
+            await AdvanceSplash(.88);
             _ready=true;
             startup.Mark("SERVICES");
-            await splash.AdvanceAsync(1);
+            await AdvanceSplash(1);
             if (!trayStart){_window!.ShowActivated=startupDirectory is null;_window.Show();}
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ContextIdle);
             startup.Mark("READY");
             if(_exitAfterStartup)RequestExit();
-            if(startupDirectory is not null){startup.Save(startupDirectory);RequestExit();}
+            if(startupDirectory is not null)
+            {
+                startup.Save(startupDirectory);
+#if EASYSWITCH_DIAGNOSTICS
+                if(packageMemory)_=Dispatcher.BeginInvoke(async()=>{try{await PackageMemoryFixture.RunAsync(e.Args,startupDirectory,_floating,_viewModel!);}catch(Exception error){File.WriteAllText(Path.Combine(startupDirectory,"error.txt"),error.ToString());}finally{RequestExit();}},System.Windows.Threading.DispatcherPriority.ContextIdle);
+                else if(trayBaseline)_=Dispatcher.BeginInvoke(async()=>{try{await RunTrayBaselineSmoke(startupDirectory,skipSplash,e.Args.Contains("--tray-menu-probe"));}catch(Exception error){File.WriteAllText(Path.Combine(startupDirectory,"error.txt"),error.ToString());}finally{RequestExit();}},System.Windows.Threading.DispatcherPriority.ContextIdle);
+                else if(lifecycle)_=Dispatcher.BeginInvoke(async()=>{try{await RunMainLifecycleSmoke(startupDirectory,e.Args.Contains("--keep-toast-off-smoke"));}catch(Exception error){File.WriteAllText(Path.Combine(startupDirectory,"error.txt"),error.ToString());}finally{RequestExit();}},System.Windows.Threading.DispatcherPriority.ContextIdle);
+                else RequestExit();
+#else
+                RequestExit();
+#endif
+            }
         }
         catch (Exception error)
         {
@@ -157,7 +249,7 @@ public partial class App : Application
             MessageBox.Show($"앱을 시작하지 못했어.\n{error.Message}", "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
         }
-        finally { splash.Close(); if(_window is null && ReferenceEquals(MainWindow,splash))MainWindow=null; }
+        finally { splash?.Close(); if(_window is null && ReferenceEquals(MainWindow,splash))MainWindow=null; }
     }
 
     private void CreateTray()
@@ -169,12 +261,21 @@ public partial class App : Application
         {
             if (args.Button == Forms.MouseButtons.Left)
             {
-                Dispatcher.Invoke(() => { if (_viewModel is not null) _viewModel.FloatingEnabled = true; });
+                Dispatcher.Invoke(() => { if (_viewModel is not null) TrayPrimaryClick(_viewModel, ShowMainWindow); });
                 return;
             }
             if (args.Button != Forms.MouseButtons.Right) return;
             Dispatcher.Invoke(OpenTrayMenu);
         };
+    }
+    // Left-click turns on the floating button. A build without it opens the main window instead.
+    internal static void TrayPrimaryClick(MainViewModel viewModel, Action show)
+    {
+#if EASYSWITCH_FLOATING
+        viewModel.FloatingEnabled = true;
+#else
+        show();
+#endif
     }
 
     // Real process/mutex/event exercise with an isolated namespace. Never creates a view model,
@@ -213,7 +314,9 @@ public partial class App : Application
         window.CloseToTrayRequested+=()=>Dispatcher.BeginInvoke(()=>ReleaseMainWindow(generation));
         window.DataContext=_viewModel;_window=window;MainWindow=window;
         new WindowInteropHelper(window).EnsureHandle();
+#if EASYSWITCH_FLOATING
         _floating?.SetMainWindow(window);
+#endif
         return window;
     }
     private void ShowMainWindow()
@@ -227,7 +330,9 @@ public partial class App : Application
         var bounds=window.RestoreBounds;
         if(!bounds.IsEmpty && bounds.Width>0 && bounds.Height>0)_mainBounds=bounds;
         _mainViewState=window.CaptureViewState();
+#if EASYSWITCH_FLOATING
         _floating?.SetMainWindow(null);
+#endif
         System.Windows.Input.Keyboard.ClearFocus();System.Windows.Input.FocusManager.SetFocusedElement(window,null);
         window.DataContext=null;window.AllowClose=true;
         _window=null;MainWindow=null;window.Close();
@@ -263,9 +368,11 @@ public partial class App : Application
             Add(viewModel.T($"채널 {target + 1}로 전환",$"Switch to channel {target+1}"), () => _ = viewModel.SwitchAsync(captured, "트레이 채널 버튼"), viewModel.CanSwitch);
         }
         menu.Items.Add(new Separator());
+#if EASYSWITCH_FLOATING
         var floating=new MenuItem{Header=viewModel.FloatingEnabled?viewModel.T("플로팅 버튼 끄기","Turn floating button off"):viewModel.T("플로팅 버튼 켜기","Turn floating button on"),Name="FloatingToggle",Style=itemStyle};
         floating.Click+=(_,_)=>viewModel.FloatingEnabled=!viewModel.FloatingEnabled;
         menu.Items.Add(floating);
+#endif
         var follow = new MenuItem { Header = viewModel.T("키보드를 따라 마우스 전환","Follow keyboard with mouse"), IsCheckable = true, IsChecked = viewModel.FollowEnabled, Style=itemStyle };
         follow.Click += (_, _) => viewModel.FollowEnabled = follow.IsChecked;
         menu.Items.Add(follow);
@@ -281,11 +388,16 @@ public partial class App : Application
     {
         if (_exiting) return;
         _exiting = true;
-        var floating=_floating;_floating=null;var notices=_notices;_notices=null;
+#if EASYSWITCH_FLOATING
+        var floating=_floating;_floating=null;
+#endif
+        var notices=_notices;_notices=null;
         if (_tray is not null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }
         try
         {
+#if EASYSWITCH_FLOATING
             if(floating is not null)await floating.DisposeAsync();
+#endif
             if(notices is not null)await notices.DisposeAsync();
             if (_viewModel is not null) await _viewModel.DisposeAsync();
         }
@@ -295,7 +407,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+#if EASYSWITCH_FLOATING
         _floating?.Dispose();
+#endif
         _notices?.Dispose();
         _tray?.Dispose();
         _icon?.Dispose();

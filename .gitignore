@@ -80,12 +80,13 @@ artifacts/
 /docs/*
 !/docs/public/
 
-# Animation implementations, controllers, renderers, and related checks are private.
+# Windows: only the floating button feature (overlay controller, motion model, drawing) and its
+# checks are private. The rest of the Windows app must build from the public source; the project
+# file detects the missing Floating/ folder and compiles without the floating button.
+# macOS: animation implementations, controllers, renderers, and related checks are private.
 /src/EasySwitch.Core/FloatingMotion.cs
 /src/EasySwitch.Core/FloatingGeometry.cs
 /src/EasySwitch.Core/FloatingResize.cs
-/src/EasySwitch.Core/FloatingAnimationSpeed.cs
-/src/EasySwitch.Windows/Floating/AnimationFrameClock.cs
 /src/EasySwitch.Windows/Floating*Fixture.cs
 /src/EasySwitch.macOS/Sources/EasySwitchCore/FloatingMotion.swift
 /src/EasySwitch.macOS/Sources/EasySwitchCore/FloatingGeometry.swift
@@ -93,19 +94,13 @@ artifacts/
 /src/EasySwitch.macOS/Sources/EasySwitchCore/FloatingAnimationSpeed.swift
 /src/EasySwitch.macOS/Sources/EasySwitchApp/Floating/FloatingFixture.swift
 /tests/EasySwitch.Core.Tests/Floating*.cs
-/tests/EasySwitch.Windows.Tests/AnimationFrameClockTests.cs
 /src/EasySwitch.macOS/Tests/EasySwitchCoreTests/Floating*.swift
 /tools/FloatingVisibilityProbe/
 /src/EasySwitch.Windows/Floating/
-/src/EasySwitch.Windows/Controls/AnimatedSection.cs
-/src/EasySwitch.Windows/Controls/SlideToggle.cs
-/src/EasySwitch.Windows/Infrastructure/UiAnimationCadence.cs
-/src/EasySwitch.Windows/MainLayout.cs
 /src/EasySwitch.macOS/Sources/EasySwitchApp/Floating/
 /src/EasySwitch.macOS/Sources/EasySwitchApp/UI/AppSettingsView.swift
 /src/EasySwitch.macOS/Sources/EasySwitchApp/UI/Theme.swift
 /tests/EasySwitch.Windows.Tests/Floating*.cs
-/tests/EasySwitch.Windows.Tests/ToastSettingsTests.cs
 /src/EasySwitch.macOS/Assets/README.md
 
 # User-facing build: track the executable and its accompanying documents only.
