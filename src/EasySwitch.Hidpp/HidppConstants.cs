@@ -28,9 +28,17 @@ public static class HidppConstants
 
     /// <summary>
     /// software_id: func|sw 바이트의 하위 4비트(1..15, 0 제외). 응답은 이 값을 에코하고, 기기가 스스로 보내는 이벤트는 0이다.
-    /// 안드로이드 앱과 같은 값이다. Logi Options+와 겹치는지는 미확인 — 측정 도구가 다른 앱 응답의 값을 기록한다.
+    /// 이 값(0x0A)은 안드로이드 앱의 값이며, 안드로이드에서 옮긴 테스트가 같은 바이트를 기대해서 빌더의 기본값으로 남겨 둔다.
+    /// Windows 앱은 이 기본값을 쓰지 않고 <see cref="WindowsSoftwareId"/>를 모든 요청에 명시한다. 측정 도구는 서비스와 함께 돌 때
+    /// 서로의 응답을 가로채지 않도록 일부러 이 값(앱과 다른 값)을 기본으로 쓴다.
     /// </summary>
     public const int DefaultSoftwareId = 0x0A;
+
+    /// <summary>
+    /// Windows 앱의 software_id. 2026-10-21 캡처에서 Options+ 실행 중 보인 다른 응답 ID 0B..0F와 겹치지 않았다.
+    /// 전 세계적으로 예약된 값이라는 뜻은 아니다.
+    /// </summary>
+    public const int WindowsSoftwareId = 0x09;
 
     public const int RootFeatureIndex = 0x00;
     public const int RootFnGetFeature = 0x00;

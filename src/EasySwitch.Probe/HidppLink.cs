@@ -52,7 +52,9 @@ internal sealed class HidppLink : IAsyncDisposable
             while (!_stop.IsCancellationRequested)
             {
                 var read = await stream.ReadAsync(buffer.AsMemory(0, info.InputLength), _stop.Token);
-                if (read <= 0) continue;
+                // A zero-length read is the end of the handle (the app treats it the same way). Continuing
+                // here would spin on a dead handle; end the loop through the normal closed path instead.
+                if (read <= 0) throw new EndOfStreamException("HID 입력 종료");
                 var raw = buffer[..read];
                 var pending = _pending;
                 var mine = pending is not null && pending.TryComplete(raw);

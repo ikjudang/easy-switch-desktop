@@ -10,7 +10,7 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 
 ### 다운로드
 
-- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-win-x64.exe) · [비압축 단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.exe) · [비압축 ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.zip) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-fast-win-x64.zip)
+- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-win-x64.exe) · [비압축 단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-uncompressed-win-x64.exe) · [비압축 ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-uncompressed-win-x64.zip) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -25,7 +25,7 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 같은 버전의 서비스 형식을 수동으로 바꾸는 다음 명령은 **앱을 사용하는 본인 Windows 계정이 관리자 계정일 때만** 사용합니다. 다른 관리자 계정의 자격 증명으로 승인해야 한다면 이 수동 명령을 사용하지 말고, 이전 버전에서 앱의 일반 업데이트 절차를 이용합니다. 사용자가 실행 파일 폴더의 PowerShell에서 명령을 실행합니다.
 
 ```powershell
-$installer = Start-Process -FilePath .\EasySwitch-0.2.41-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
+$installer = Start-Process -FilePath .\EasySwitch-0.2.42-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
 $installer.ExitCode
 ```
 
@@ -118,7 +118,7 @@ Apps are available for Windows and macOS. The guide below is based on the Window
 
 ### Download
 
-- Windows: [Single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-win-x64.exe) · [Uncompressed single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.exe) · [Uncompressed ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.zip) · [Fast-start package](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-fast-win-x64.zip)
+- Windows: [Single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-win-x64.exe) · [Uncompressed single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-uncompressed-win-x64.exe) · [Uncompressed ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-uncompressed-win-x64.zip) · [Fast-start package](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.42/EasySwitch-0.2.42-fast-win-x64.zip)
 - macOS: [App package](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS guide (Korean)](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - All release files and update notes: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -133,7 +133,7 @@ To change to a different package format of the same version, quit the running ap
 Use the following command, which manually changes the service format for the same version, **only if the Windows account you use the app with is itself an administrator account**. If approval requires the credentials of a different administrator account, do not use this manual command; use the app's normal update procedure from an earlier version instead. Run the command in PowerShell in the folder that contains the executable.
 
 ```powershell
-$installer = Start-Process -FilePath .\EasySwitch-0.2.41-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
+$installer = Start-Process -FilePath .\EasySwitch-0.2.42-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
 $installer.ExitCode
 ```
 

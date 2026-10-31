@@ -4,6 +4,8 @@ namespace EasySwitch.Windows.Infrastructure;
 
 public static class SwitchCode
 {
+    // V0213 names the code-line format revision (introduced with Windows 0.2.13); it is not the running
+    // app version. Change it only when the field layout changes, so readers know which layout applies.
     public const string Prefix="ES1|V0213";
     public static string Format(int request,string source,int target,string role,long elapsed,SwitchProgress p)
     {

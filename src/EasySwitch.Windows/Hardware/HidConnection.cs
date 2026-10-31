@@ -15,6 +15,8 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
     private readonly SemaphoreSlim _writeGate = new(1);
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _requestGates = new();
     private readonly ConcurrentDictionary<int, Pending> _pending = new();
+    private readonly ConcurrentDictionary<(int Index, int Protocol, ResponseKind Layout), byte> _errorLayouts = new();
+    private readonly ConcurrentDictionary<int, RepeatedLogLine> _lookupTimeouts = new();
     private Task[] _readers = [];
     private int _closed;
     private int _recoveryRequired;
@@ -23,7 +25,7 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
     public string Name { get; }
     public bool IsReceiver { get; }
     // Verified alongside the observed 0B..0F response IDs during the 2026-10-21 captures.
-    public int SoftwareId => 0x09;
+    public int SoftwareId => HidppConstants.WindowsSoftwareId;
     public int ProductId => _channels[0].Info.ProductId;
     public string ConnectionLabel => !IsReceiver ? "Bluetooth" : ProductId switch
     {
@@ -64,6 +66,8 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
         {
             var request = ReceiverMessages.BuildGetShortRegister(HidppConstants.RegisterNotifications);
             var flags = await RequestAsync(request, cancel).ConfigureAwait(false);
+            // A closed receiver handle is already logged by its input loop and has nothing to configure.
+            if (flags is null && !IsOpen) return;
             if (flags is null || HidppFrameParser.IsError(flags))
             {
                 _log.Write($"[{Name}] 연결 알림 설정 조회 실패. 정기 조회로 연결 상태를 확인함");
@@ -97,20 +101,23 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
                 var length = await stream.ReadAsync(buffer, _stop.Token).ConfigureAwait(false);
                 if (length == 0) throw new EndOfStreamException("HID 입력 종료");
                 var raw = buffer[..length];
-                var matched = raw.Length > 1 && _pending.TryGetValue(raw[1], out var pending) && pending.TryComplete(raw);
-                if(_traceFrames)_log.Write($"[{Name}] RX{(matched ? " 응답" : "")} {Hex.Format(raw)}");
+                Pending? pending = null;
+                var kind = raw.Length > 1 && _pending.TryGetValue(raw[1], out pending) ? pending.TryComplete(raw) : null;
+                if(_traceFrames)_log.Write($"[{Name}] RX{(kind is not null ? " 응답" : "")} {Hex.Format(raw)}");
                 try { Received?.Invoke(this, raw); }
                 catch (Exception error) when (!_stop.IsCancellationRequested)
                 {
                     _log.Write($"[{Name}] 이벤트 처리 실패. 입력 감시는 계속함: {error.GetType().Name} {error.Message}");
                 }
+                if (kind is ResponseKind.ErrorSolaarLayout or ResponseKind.ErrorSwappedLayout) NoteErrorLayout(pending!.Request, raw, kind.Value);
             }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
         catch (Exception error)
         {
-            _log.Write($"[{Name}] 입력 통로 종료: {error.Message}");
+            // Close first: closing can hand a parked departure to the follow path, whose write must not wait for this line.
             MarkClosed();
+            _log.Write($"[{Name}] 입력 통로 종료: {error.Message}");
         }
     }
 
@@ -126,25 +133,52 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancel, _stop.Token);
         var gate = _requestGates.GetOrAdd(request[1], _ => new SemaphoreSlim(1));
-        await gate.WaitAsync(linked.Token).ConfigureAwait(false);
+        // MarkClosed answers waiting requests with null. A cancellation that came only from the
+        // closed channel means the same thing; it is not a caller cancellation or a failure.
+        try { await gate.WaitAsync(linked.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ClosedFor(cancel)) { return null; }
         var pending = new Pending(request);
         try
         {
             _pending[request[1]] = pending;
-            await SendAsync(request, linked.Token).ConfigureAwait(false);
-            try { return await pending.Completion.Task.WaitAsync(TimeSpan.FromMilliseconds(750), linked.Token).ConfigureAwait(false); }
+            // SendAsync links the channel's own stop token; pass the caller's token so it can tell
+            // a closed channel from a caller cancellation.
+            await SendAsync(request, cancel).ConfigureAwait(false);
+            byte[]? reply;
+            try { reply = await pending.Completion.Task.WaitAsync(TimeSpan.FromMilliseconds(750), linked.Token).ConfigureAwait(false); }
             catch (TimeoutException)
             {
-                _log.Write($"[{Name} #{request[1]}] 조회 시간 초과: feature 0x{request[2]:X2}, 함수 0x{request[3] >> 4:X1}. 응답을 받지 못함");
+                var line = $"[{Name} #{request[1]}] 조회 시간 초과: feature 0x{request[2]:X2}, 함수 0x{request[3] >> 4:X1}. 응답을 받지 못함";
+                // Polling lookups of an absent receiver slot repeat the same timeout; collapse only those.
+                if (IsRootLookup(request)) foreach (var text in _lookupTimeouts.GetOrAdd(request[1], _ => new()).Next(line)) _log.Write(text);
+                else _log.Write(line);
                 return null;
             }
+            if (reply is not null && IsRootLookup(request) && _lookupTimeouts.TryGetValue(request[1], out var repeated) && repeated.Reset("응답 받음") is { } summary)
+                _log.Write(summary);
+            return reply;
         }
+        catch (OperationCanceledException) when (ClosedFor(cancel)) { return null; }
         finally
         {
             _pending.TryRemove(request[1], out _);
             gate.Release();
         }
     }
+
+    private bool ClosedFor(CancellationToken cancel) => _stop.IsCancellationRequested && !cancel.IsCancellationRequested;
+    private static bool IsRootLookup(byte[] request) => request.Length >= HidppConstants.HeaderLength && request[2] == HidppConstants.RootFeatureIndex;
+
+    private void NoteErrorLayout(byte[] request, byte[] raw, ResponseKind layout)
+    {
+        if (HidppMatch.ErrorLayoutAmbiguous(request) || HidppFrameParser.ParseError(raw) is not { } error) return;
+        if (!_errorLayouts.TryAdd((raw[1], error.Protocol, layout), 0)) return;
+        _log.Write($"[{Name} #{raw[1]}] HID++ {error.Protocol}.0 오류 바이트 배치 확인: {ErrorLayoutLabel(layout)}. 요청 feature 0x{request[2]:X2}, 함수 0x{request[3] >> 4:X1}, 오류 C{error.ErrorCode:X2}. 같은 기기·배치는 다시 기록하지 않음");
+    }
+
+    internal static string ErrorLayoutLabel(ResponseKind layout) => layout == ResponseKind.ErrorSolaarLayout
+        ? "Solaar 배치(byte3=요청 feature, byte4=요청 func|sw)"
+        : "뒤집힌 배치(byte3=요청 func|sw, byte4=요청 feature)";
 
     public async Task SendAsync(byte[] request, CancellationToken cancel)
     {
@@ -183,6 +217,12 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
             }
             throw new IOException(writing?"HID 출력 시간 초과. 새 통로의 로컬 연결을 확인한 뒤 복구함":"HID 출력 통로 대기 시간 초과. 전송은 시작하지 않음",error);
         }
+        catch(OperationCanceledException error) when(!cancel.IsCancellationRequested && _stop.IsCancellationRequested)
+        {
+            // The input loop closed this channel (device removed or handle failed). Report it as an
+            // I/O condition so callers classify it by the transport state, not as an unexpected failure.
+            throw new HidChannelClosedException(writing?"HID 통로가 쓰기 중 닫힘. 전송 여부 미확인":"HID 통로가 닫혀 전송을 시작하지 않음",error);
+        }
         finally { if(acquired)_writeGate.Release(); }
     }
 
@@ -195,7 +235,10 @@ internal sealed class HidConnection : IDeviceTransport,IAsyncDisposable
 
     private sealed class Pending(byte[] request)
     {
+        public byte[] Request => request;
         public TaskCompletionSource<byte[]?> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool TryComplete(byte[] raw) => HidppMatch.Classify(request, raw) is not null && Completion.TrySetResult(raw);
+        public ResponseKind? TryComplete(byte[] raw) => HidppMatch.Classify(request, raw) is { } kind && Completion.TrySetResult(raw) ? kind : null;
     }
 }
+
+internal sealed class HidChannelClosedException(string message, Exception inner) : IOException(message, inner);
