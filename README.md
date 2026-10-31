@@ -1,10 +1,14 @@
 # EasySwitch
 
+[한국어](#한국어) · [English](#english)
+
+## 한국어
+
 Logitech Easy-Switch 기기를 위한 데스크톱 앱입니다. 사용자는 앱에서 채널을 선택하거나, 키보드의 채널 전환에 맞춰 마우스를 함께 옮길 수 있습니다.
 
 Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 기준으로 합니다.
 
-## 다운로드
+### 다운로드
 
 - Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-win-x64.exe) · [비압축 단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.exe) · [비압축 ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.zip) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
@@ -27,7 +31,7 @@ $installer.ExitCode
 
 종료 코드 `0`은 설치 성공입니다. 다른 값이면 `%ProgramData%\EasySwitch\Service\install-result.txt`를 확인합니다.
 
-## 처음 사용하기
+### 처음 사용하기
 
 1. 사용자가 키보드와 마우스를 사용할 컴퓨터·기기에 먼저 연결합니다. 같은 채널이 같은 기기를 가리키도록 각 기기의 연결을 맞춥니다.
 2. EasySwitch를 실행합니다. 앱은 연결된 Logi Bolt·Unifying 수신기와 Bluetooth 기기를 검색합니다.
@@ -37,13 +41,13 @@ $installer.ExitCode
 
 앱은 사용자가 선택한 기기를 대상으로 동작합니다. 새 기기의 최초 연결은 운영체제나 제조사의 연결 도구에서 먼저 완료합니다.
 
-## 홈과 채널
+### 홈과 채널
 
 홈 화면에서 선택한 기기의 연결 상태와 전환할 채널을 확인할 수 있습니다. 현재 연결된 채널 표시와 마지막 전환 이력은 서로 구분합니다.
 
 채널 이름을 바꾸려면 채널을 우클릭하고, 나타난 입력칸에서 이름을 수정한 뒤 **확인**을 누릅니다.
 
-## 플로팅 버튼
+### 플로팅 버튼
 
 설정의 **플로팅 버튼** 행은 하위 설정을 펼치거나 접습니다. 오른쪽 토글은 플로팅 버튼의 사용을 켜거나 끕니다. 트레이 메뉴에서도 플로팅 버튼을 켜고 끌 수 있습니다.
 
@@ -54,7 +58,7 @@ $installer.ExitCode
 - **하위 버튼 항상 표시**를 켜면 하위 버튼이 펼쳐진 상태로 유지됩니다.
 - 투명도, 크기, 애니메이션 속도와 바운스 사용 여부를 설정할 수 있습니다.
 
-## 트레이와 백그라운드 실행
+### 트레이와 백그라운드 실행
 
 창의 닫기·최소화는 앱을 트레이로 보냅니다. 사용자가 트레이 아이콘을 좌클릭하면 앱이 플로팅 버튼을 켜고, 우클릭하면 메뉴를 엽니다. 플로팅 버튼이 이미 켜져 있으면 켜진 상태를 유지합니다. 메뉴의 **EasySwitch 열기**로 메인 창을 열고, 채널을 전환하거나 연결 로그를 확인할 수 있습니다.
 
@@ -66,7 +70,7 @@ $installer.ExitCode
 
 새 버전 파일을 실행하면 앱이 실행 중인 이전 버전을 교체합니다. 같은 버전은 기존 창을 열고, 더 오래된 파일을 실행한 경우에는 이미 실행 중인 최신 버전을 유지합니다.
 
-## 설정과 알림
+### 설정과 알림
 
 설정에서 언어, 플로팅 버튼, 마우스 따라가기, 연결 로그와 로그 자동 저장을 관리합니다. 언어는 한국어와 English를 지원합니다.
 
@@ -74,7 +78,7 @@ $installer.ExitCode
 
 사용자가 설정의 **토스트** 행을 누르면 크기와 투명도 설정이 펼쳐집니다. 오른쪽 토글로 토스트를 켜거나 끕니다. 앱은 변경한 값을 바로 반영하고 재실행 후에도 유지합니다. 토스트를 꺼도 기기 전환과 로그 기록은 계속 동작합니다.
 
-## 로그
+### 로그
 
 **설정 → 연결 로그**에서 연결·전환 기록을 확인하고, **코드 보기**로 상태 코드를 볼 수 있습니다. 각 화면의 **내보내기**는 사용자가 고른 파일로 기록을 저장합니다.
 
@@ -82,10 +86,102 @@ $installer.ExitCode
 
 자세한 사용 방법은 [로그 안내](docs/public/logs.md)를 참고합니다.
 
-## 공개 소스
+### 공개 소스
 
 이 저장소에는 공개 대상 소스를 제공합니다. 일부 내부 구현은 공개하지 않으므로 공개 소스만으로 전체 앱을 빌드할 수는 없습니다. 배포 실행 파일에는 앱 실행에 필요한 기능이 포함됩니다.
 
-## 라이선스
+### 라이선스
 
 배포물에 포함된 글꼴의 라이선스는 [라이선스 폴더](build/Assets/Licenses)에 함께 제공합니다.
+
+## English
+
+EasySwitch is a desktop app for Logitech Easy-Switch devices. You can choose a channel in the app, or have your mouse move along with your keyboard when the keyboard switches channels.
+
+Apps are available for Windows and macOS. The guide below is based on the Windows app.
+
+### Download
+
+- Windows: [Single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-win-x64.exe) · [Uncompressed single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.exe) · [Uncompressed ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-uncompressed-win-x64.zip) · [Fast-start package](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.41/EasySwitch-0.2.41-fast-win-x64.zip)
+- macOS: [App package](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS guide (Korean)](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
+- All release files and update notes: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
+
+To use the single executable, run the downloaded file. To use the fast-start package, extract it, run `EasySwitch.exe`, and keep the extracted folders and files together. You do not need to install a separate runtime.
+
+The uncompressed single executable is a larger file, offered as an option to reduce memory use while the app is running. If you downloaded the uncompressed ZIP, extract it and run the executable whose name includes `-uncompressed`. The app's features and settings are the same as those of the regular single executable.
+
+When you update from an earlier version for the first time, if you run the uncompressed file and allow the app's service update request, the service is also installed in the uncompressed format.
+
+To change to a different package format of the same version, quit the running app completely from the tray first, then run the new file. If a service of the same version is already running, replacing only the app's executable does not replace the service.
+
+Use the following command, which manually changes the service format for the same version, **only if the Windows account you use the app with is itself an administrator account**. If approval requires the credentials of a different administrator account, do not use this manual command; use the app's normal update procedure from an earlier version instead. Run the command in PowerShell in the folder that contains the executable.
+
+```powershell
+$installer = Start-Process -FilePath .\EasySwitch-0.2.41-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
+$installer.ExitCode
+```
+
+An exit code of `0` means the installation succeeded. For any other value, check `%ProgramData%\EasySwitch\Service\install-result.txt`.
+
+### Getting started
+
+1. Connect your keyboard and mouse to each computer or device you will use them with. Set up the connections so that the same channel points to the same device on both the keyboard and the mouse.
+2. Run EasySwitch. The app searches for connected Logi Bolt and Unifying receivers and Bluetooth devices.
+3. On the **Devices** page, select the keyboard and mouse you want to use. To check the list again, use the refresh button on this page.
+4. To have your mouse follow your keyboard's channel switches, turn on **Settings → Follow keyboard with mouse**.
+5. To switch directly from the app, choose a channel on the home screen, the floating button, or the tray menu.
+
+The app works with the devices you select. Complete the first-time pairing of a new device with your operating system's or the manufacturer's pairing tool first.
+
+### Home and channels
+
+On the home screen, you can check the connection status of the selected devices and the channel to switch to. The currently connected channel and the most recent switch history are shown separately.
+
+To rename a channel, right-click the channel, edit the name in the field that appears, and press **OK**.
+
+### Floating button
+
+In Settings, the **Floating button** row expands or collapses its sub-settings. The toggle on the right turns the floating button on or off. You can also turn the floating button on or off from the tray menu.
+
+- Clicking the home button expands the channel buttons and the **App** button.
+- A channel button requests a device switch, and the **App** button opens the main window.
+- Drag the home button to move it.
+- To turn off the floating button, press and hold or right-click the home button, then drop it on the X area. To use it again, turn it on in Settings or from the tray.
+- When **Always show menu buttons** is on, the menu buttons stay expanded.
+- You can set the transparency, size, animation speed, and whether to use the bounce animation.
+
+### Tray and background operation
+
+Closing or minimizing the window sends the app to the tray. When you left-click the tray icon, the app turns on the floating button; when you right-click it, the app opens the menu. If the floating button is already on, it stays on. From the menu, you can open the main window with **Open EasySwitch**, switch channels, or check the connection log.
+
+When the app asks to install a Windows service on the first run, allow the installation in the administrator approval prompt. Once the service is installed, the background service and the tray app start automatically when Windows starts and when you sign in. To retry the installation, choose **Install or update boot service** from the tray.
+
+The installed service keeps monitoring your devices before sign-in and while you are signed out. While the PC is asleep, the service does not process switches; it resumes monitoring when the PC wakes from sleep.
+
+**Quit EasySwitch** in the tray closes the on-screen app. To stop the installed service from making the mouse follow the keyboard, turn off **Follow keyboard with mouse**.
+
+When you run the file of a newer version, the app replaces the older version that is running. If you run the same version, the app opens the existing window; if you run an older file, the newer version that is already running is kept.
+
+### Settings and notifications
+
+In Settings, you can manage the language, the floating button, mouse following, the connection log, and automatic log saving. The app supports Korean and English.
+
+Toasts show the connection and channel-switch status of your devices. They report the processing status that the app observed; whether input actually works on the other device is for you to check.
+
+When you click the **Toast** row in Settings, the size and transparency settings expand. Use the toggle on the right to turn toasts on or off. The app applies your changes immediately and keeps them after a restart. Device switching and logging continue even when toasts are off.
+
+### Logs
+
+In **Settings → Connection log**, you can view connection and switch records, and use **Codes** to view status codes. **Export** on each screen saves the records to a file you choose.
+
+**Save logs automatically** additionally writes logs to a folder you choose. Local logs are kept even when this setting is off. The app does not automatically upload logs to any server.
+
+For more details, see the [log guide (Korean)](docs/public/logs.md).
+
+### Public source
+
+This repository provides the source code that is made public. Some internal implementation is not public, so the full app cannot be built from the public source alone. The released executables include everything needed to run the app.
+
+### License
+
+The licenses for the fonts included in the release packages are provided in the [Licenses folder](build/Assets/Licenses).
