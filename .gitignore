@@ -103,10 +103,9 @@ artifacts/
 /tests/EasySwitch.Windows.Tests/Floating*.cs
 /src/EasySwitch.macOS/Assets/README.md
 
-# User-facing build: track the executable and its accompanying documents only.
+# User-facing build: track the accompanying documents only. Release executables and ZIP packages
+# are distributed as GitHub release assets and are not committed.
 /build/*
-!/build/EasySwitch-*.exe
-!/build/EasySwitch-*-fast-win-*.zip
 !/build/README.txt
 !/build/SHA256SUMS.txt
 !/build/status-codes.md
@@ -546,6 +545,3 @@ src/EasySwitch.macOS/.swiftpm/
 /tests/EasySwitch.Windows.Tests/PackageMemoryTests.cs
 /src/EasySwitch.Windows/PreviewRenderer*.cs
 /src/EasySwitch.Windows/Floating/FloatingBenchmark.cs
-!/build/EasySwitch-*.zip
-# Large uncompressed executables are distributed as release assets.
-/build/EasySwitch-*-uncompressed-*.exe
