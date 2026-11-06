@@ -168,8 +168,9 @@ public partial class MainWindow
             var button=Button(row,()=>_vm.NavigateCommand.Execute(page),true,new(12)); button.Background=active?B("PointTintBg"):Brushes.Transparent; button.Margin=new Thickness(0,0,0,6); upper.Children.Add(button);
         }
         rail.Children.Add(upper);
-        var footer=new StackPanel { Margin=new Thickness(22,0,14,24) };
-        var statusRow=new StackPanel{Orientation=Orientation.Horizontal};var dot=new Ellipse{Width=6,Height=6,Margin=new Thickness(0,0,8,0),VerticalAlignment=VerticalAlignment.Center};dot.SetBinding(Shape.FillProperty,new Binding(nameof(MainViewModel.FollowEnabled)){Converter=new TokenBrushConverter("Success","Warn")});statusRow.Children.Add(dot);var status=Text("",11,"Text2");status.SetBinding(TextBlock.TextProperty,new Binding(nameof(MainViewModel.FollowStatus)));statusRow.Children.Add(status);footer.Children.Add(statusRow);
+        const double footerInset = 22;
+        var footer=new StackPanel { Margin=new Thickness(footerInset,0,14,footerInset) };
+        var statusRow=new StackPanel{Orientation=Orientation.Horizontal};var dot=new Ellipse{Width=6,Height=6,Margin=new Thickness(0,0,8,0),VerticalAlignment=VerticalAlignment.Center};dot.SetBinding(Shape.FillProperty,new Binding(nameof(MainViewModel.FollowIndicatorOn)){Converter=new TokenBrushConverter("Success","Warn")});statusRow.Children.Add(dot);var status=Text("",11,"Text2");status.SetBinding(TextBlock.TextProperty,new Binding(nameof(MainViewModel.FollowStatus)));status.SetBinding(FrameworkElement.ToolTipProperty,new Binding(nameof(MainViewModel.FollowStatusHint)));statusRow.Children.Add(status);footer.Children.Add(statusRow);
         var version=Text($"Easy Switch v{AppVersion.Label}",11,"GlyphDisabled"); version.FontFamily=(FontFamily)FindResource("SpaceMono"); version.Margin=new Thickness(0,8,0,0); footer.Children.Add(version); Grid.SetRow(footer,2); rail.Children.Add(footer); LayoutRoot.Children.Add(rail);
         _pageHost=new Grid { Margin=new Thickness(32,30,32,30) }; Grid.SetColumn(_pageHost,1); LayoutRoot.Children.Add(_pageHost); BuildPage();
     }

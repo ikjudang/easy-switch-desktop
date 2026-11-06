@@ -38,6 +38,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly object _followGate = new();
     private FollowIntent? _pendingFollow;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _observedArrivals = new();
+    // Log-only memory: when this app last finished writing setCurrentHost to a selected mouse. It never
+    // gates a write; a mouse that comes back to this PC within the follow window is logged as a failed send.
+    private sealed record SentMouse(long At,int Target,string Name,string Reason);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SentMouse> _sentMice = new();
     private string _page = "홈";
     private string _lastRequest = "앱이 선택한 기기에 전환 명령을 보내.";
     private bool _enableAfterFolder;
@@ -111,7 +115,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public bool CanSwitch => _service is not null ? _service.Connected && Devices.Any(d=>d.Online && IsSelectedDevice(d.Id)) : _previewDevices is not null
         ? _previewDevices.Any(d => d.Online && IsSelectedDevice(d.Id))
         : SelectedDevices().Any(d => d.TransportAvailable && d.LocalLinkConnected != false && d.HostCount > 0);
-    public string FollowStatus => FollowEnabled ? T("마우스 따라가기 켜짐", "Mouse follow on") : T("마우스 따라가기 꺼짐", "Mouse follow off");
+    // The user declined the service approval and the registered service is not running: nothing follows
+    // the keyboard, so the window says so and how to fix it instead of showing "follow on".
+    internal bool FollowStoppedAfterDecline => ServiceRegistration.FollowStoppedAfterDecline && _service is not null && !_serviceConnected;
+    private volatile bool _serviceConnected;
+    public string FollowStatus => FollowStoppedAfterDecline ? T("서비스 멈춤 · 따라가기 꺼짐", "Service stopped · Follow off")
+        : FollowEnabled ? T("마우스 따라가기 켜짐", "Mouse follow on") : T("마우스 따라가기 꺼짐", "Mouse follow off");
+    public string? FollowStatusHint => FollowStoppedAfterDecline
+        ? T("서비스가 멈춰 있어 키보드 따라가기가 꺼져 있습니다. 트레이 메뉴의 '로그인 전 실행 설치·업데이트'를 선택해 서비스를 시작해 주세요.",
+            "The service is stopped, so following the keyboard is off. Choose 'Install or update boot service' in the tray menu to start it.") : null;
+    public bool FollowIndicatorOn => FollowEnabled && !FollowStoppedAfterDecline;
     public bool SelectedKeyboardOnline => Devices.Any(d => d.Id == KeyboardId && d.Online);
     public bool SelectedMouseOnline => Devices.Any(d => d.Id == MouseId && d.Online);
     public bool English => _settings.Value.Language == "en";
@@ -238,6 +251,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             var seenBefore = !_observedArrivals.TryAdd(device.Id, true);
             if(IsSelectedDevice(device.Id) && !device.DepartureSignalActive)_log.WriteCode($"{SwitchCode.Prefix} R0000 {CodeRole(device.Id)} {(seenBefore?"RET":"RDY")}");
+            LogSentMouseReturn(device);
             if (!IsSelectedDevice(device.Id) || !KnowsRole(device.Id,"키보드")) return;
             if (device.DepartureSignalActive)
             {
@@ -307,7 +321,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         };
         client.RestorePreferences(EnginePreferences.From(_settings.Value));
         client.SnapshotReceived+=snapshot=>{if(ReferenceEquals(_service,client))ReceiveServiceSnapshot(snapshot,client.CanApplyPreferences(snapshot));};
-        client.AvailabilityChanged+=available=>{if(!available)Dispatch(()=>{_serviceDevices=(_serviceDevices??[]).Select(d=>d with{Online=false}).ToArray();UpdateDevices();});};
+        client.AvailabilityChanged+=available=>
+        {
+            _serviceConnected=available;
+            Dispatch(()=>
+            {
+                if(!available){_serviceDevices=(_serviceDevices??[]).Select(d=>d with{Online=false}).ToArray();UpdateDevices();}
+                Notify(nameof(FollowStatus));Notify(nameof(FollowStatusHint));Notify(nameof(FollowIndicatorOn));
+            });
+        };
     }
     internal async Task InstallBootServiceAsync()
     {
@@ -634,6 +656,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
+    // Log only. A mouse this app sent away that is back on this PC within the follow window did not stay
+    // on the destination. This PC cannot tell the mouse's own return from an empty channel (measured about
+    // 5.6 s) from another host bringing it here (T5 2026-11-01: all three returns were another host), so
+    // the line states what was seen and does not call the send failed.
+    // Nothing here changes what is sent, retried or cancelled.
+    private void LogSentMouseReturn(HostDevice device)
+    {
+        if(!_sentMice.TryRemove(device.Id,out var sent))return;
+        var elapsed=System.Diagnostics.Stopwatch.GetElapsedTime(sent.At);
+        if(elapsed.TotalMilliseconds>FollowPreparation.WaitMilliseconds)return;
+        _log.Write($"[{sent.Name}] 보낸 마우스가 {elapsed.TotalSeconds:F1}초 만에 이 PC로 돌아옴: 채널 {sent.Target+1}로 보낸 뒤({sent.Reason}) 이 PC 로컬 링크가 다시 올라옴. 스스로 돌아왔는지 다른 호스트가 데려왔는지는 이 PC에서 구분하지 못함(전환 동작은 바꾸지 않음)");
+    }
+
     private IEnumerable<HostDevice> SelectedDevices()
     {
         foreach(var device in SelectedIds.Select(id=>_monitor.Find(id)).Where(d=>d is not null).Cast<HostDevice>().OrderBy(d=>d.Info.Kind=="마우스"?0:1))yield return device;
@@ -652,6 +687,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var role=CodeRole(device.Id);
         return _switches.SwitchAsync(device,target,reason,p=>
         {
+            if(p.Step==SwitchStep.Written && KnowsRole(device.Id,"마우스"))_sentMice[device.Id]=new(System.Diagnostics.Stopwatch.GetTimestamp(),target,device.Name,reason);
             _log.WriteCode(SwitchCode.Format(code.Id,code.Source,target,role,code.Clock.ElapsedMilliseconds,p));
             if(generation==Volatile.Read(ref _batchGeneration) && Volatile.Read(ref _stopping)==0 && DeviceResult.FromProgress(device.Id,device.Name,device.Info.Kind,p) is {} row)
             {

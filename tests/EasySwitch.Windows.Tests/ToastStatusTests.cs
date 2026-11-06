@@ -12,12 +12,28 @@ public sealed class ToastStatusTests
     [InlineData(DeviceNoticeState.Unconfirmed,"확인 필요")]
     [InlineData(DeviceNoticeState.Cancelled,"확인 필요")]
     [InlineData(DeviceNoticeState.Failed,"실패")]
-    [InlineData(DeviceNoticeState.Unavailable,"실패")]
-    [InlineData(DeviceNoticeState.WaitExpired,"실패")]
+    [InlineData(DeviceNoticeState.Unavailable,"확인 필요")]
+    [InlineData(DeviceNoticeState.WaitExpired,"확인 필요")]
     public void PendingAndUnknownStepsKeepTheirDisplayState(DeviceNoticeState state,string expected)
     {
         var status=NoticeBubble.Status(new("Mouse",null,"마우스","m",state),false);
         Assert.Equal(expected,status.Text);Assert.NotEqual(Color.FromRgb(0,230,118),((SolidColorBrush)status.Color).Color);
+    }
+    // 2026-11-01 14:38~14:40: the mouse had left this PC for the tablet, the 10 s wait expired without any
+    // command, and the toast said Failed while the mouse sat on the destination. Not reaching a device is
+    // not a failed switch: only a sent command that did not take effect is Failed (red).
+    [Theory]
+    [InlineData(DeviceNoticeState.WaitExpired)]
+    [InlineData(DeviceNoticeState.Unavailable)]
+    public void ADeviceThisPcCouldNotReachIsUnconfirmedInWhiteNeverFailedInRed(DeviceNoticeState state)
+    {
+        foreach(var english in new[]{false,true})
+        {
+            var status=NoticeBubble.Status(new("Mouse",null,"마우스","m",state),english);
+            Assert.Equal(english?"Unconfirmed":"확인 필요",status.Text);Assert.Equal(Colors.White,((SolidColorBrush)status.Color).Color);
+        }
+        var sentButStayed=NoticeBubble.Status(new("Mouse",null,"마우스","m",DeviceNoticeState.Failed),false);
+        Assert.Equal("실패",sentButStayed.Text);Assert.Equal(Color.FromRgb(229,57,53),((SolidColorBrush)sentButStayed.Color).Color);
     }
     [Theory]
     [InlineData(DeviceNoticeState.SignalObserved)]

@@ -483,6 +483,42 @@ public sealed class SwitchSignalPathTests : IDisposable
         Assert.Single(Lines(log, "[Mouse] 따라 전환 대기: 상태를 한 번 즉시 다시 조회함"));
     });
 
+    // Log only: a mouse this app sent away that is back on this PC within the follow window is logged with the
+    // elapsed time and no verdict. Nothing is written again and a second return, or one after the window, is not logged.
+    [Fact]
+    public Task AMouseSentAwayThatComesBackWithinTheWindowIsLoggedAndNothingIsResent() => Sta(async () =>
+    {
+        using var log = Log();
+        var keyWire = new FakeWire("keyboard", receiver: false);
+        var mouseWire = new FakeWire("mouse", receiver: false) { Name = "Mouse", Kind = 3, CloseOnWrite = true };
+        await using var vm = Model(log, keyWire, mouseWire, out var monitor, out var keyboard, out var mouse);
+        await keyboard.RefreshAsync(default); await mouse.RefreshAsync(default); Assert.True(mouse.Info.Online);
+        Initialized(monitor)[keyWire.Key] = 1; Initialized(monitor)[mouseWire.Key] = 1;
+        monitor.Process(keyWire, Event(0xFF, 9, 1));
+        await Until(() => mouseWire.Writes == 1 && Lines(log, "HID 출력 쓰기 완료").Length == 1);
+        Assert.Empty(Lines(log, "보낸 마우스가"));
+
+        void Bounce() { mouse.MarkLinkClosed(); mouseWire.IsOpen = true; Assert.True(mouse.ReportLocalHost(new HostInfo(3, 0), mouse.HostQueryRevision)); }
+        Bounce();                                              // the mouse is back on this PC a moment later
+        var returned = Assert.Single(Lines(log, "보낸 마우스가"));
+        Assert.Contains("[Mouse]", returned); Assert.Contains("초 만에 이 PC로 돌아옴", returned);
+        Assert.Contains("채널 2로 보낸 뒤(키보드 Easy-Switch 신호)", returned); Assert.Contains("다른 호스트가 데려왔는지는 이 PC에서 구분하지 못함", returned); Assert.DoesNotContain("실패", returned);
+
+        Bounce();                                              // a second return has no send to refer to
+        await Task.Delay(100);
+        Assert.Single(Lines(log, "보낸 마우스가"));
+
+        // A send that is older than the follow window is not reported.
+        var sentType = typeof(MainViewModel).GetNestedType("SentMouse", Hidden)!;
+        var old = Activator.CreateInstance(sentType, System.Diagnostics.Stopwatch.GetTimestamp() - 11 * System.Diagnostics.Stopwatch.Frequency, 0, "Mouse", "채널 버튼")!;
+        var sent = typeof(MainViewModel).GetField("_sentMice", Hidden)!.GetValue(vm)!;
+        sent.GetType().GetProperty("Item")!.SetValue(sent, old, [mouse.Id]);
+        Bounce();
+        Assert.Single(Lines(log, "보낸 마우스가"));
+        Assert.Equal(1, mouseWire.Writes);                   // returning never causes another setCurrentHost
+        Assert.Equal(0, keyWire.Writes);
+    });
+
     [Fact]
     public Task ManualSwitchLogsEachExcludedDeviceAfterTheWritesAreIssued() => Sta(async () =>
     {
@@ -602,7 +638,7 @@ public sealed class SwitchSignalPathTests : IDisposable
         public bool IsReceiver => receiver;
         public string ConnectionLabel => receiver ? "Logi Bolt" : "Bluetooth";
         public int Index => receiver ? 1 : 0xFF;
-        public bool IsOpen { get; private set; } = true;
+        public bool IsOpen { get; set; } = true;
         public int SoftwareId => 9;
         public int Feature = 9, Kind;
         public int Host { get; init; }

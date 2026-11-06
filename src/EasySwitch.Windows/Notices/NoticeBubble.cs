@@ -27,8 +27,10 @@ internal sealed class NoticeBubble : FrameworkElement
     {
         if(row.State==DeviceNoticeState.Connected)return(english?"Connected":"연결됨",Brushes.White);
         if(row.Success==true || row.State is DeviceNoticeState.Confirmed or DeviceNoticeState.SignalObserved or DeviceNoticeState.Departed)return(english?"Complete":"완료",Complete);
-        if(row.Success==false || row.State is DeviceNoticeState.Failed or DeviceNoticeState.Unavailable or DeviceNoticeState.WaitExpired)return(english?"Failed":"실패",Failed);
-        if(row.State is DeviceNoticeState.Unconfirmed or DeviceNoticeState.Cancelled)return(english?"Unconfirmed":"확인 필요",Brushes.White);
+        // Failed means a command was sent and the device stayed. A mouse this PC cannot reach (wait expired,
+        // excluded) may already be on the destination, so it is unconfirmed, not failed.
+        if(row.Success==false || row.State is DeviceNoticeState.Failed)return(english?"Failed":"실패",Failed);
+        if(row.State is DeviceNoticeState.Unconfirmed or DeviceNoticeState.Cancelled or DeviceNoticeState.Unavailable or DeviceNoticeState.WaitExpired)return(english?"Unconfirmed":"확인 필요",Brushes.White);
         return(english?"Switching":"전환 중",Brushes.White);
     }
     private FormattedText Text(string value)

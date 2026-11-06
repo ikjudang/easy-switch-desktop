@@ -8,7 +8,8 @@ using EasySwitch.Windows.Infrastructure;
 namespace EasySwitch.Windows.Service;
 
 internal enum BootServiceAction{Skip,Wait,Prompt}
-internal sealed record BootServiceDecision(BootServiceAction Action,string Reason,TimeSpan Wait=default);
+/// <param name="DeclinedWhileStopped">The user declined the approval prompt and the registered service is not running, so nothing follows the keyboard.</param>
+internal sealed record BootServiceDecision(BootServiceAction Action,string Reason,TimeSpan Wait=default,bool DeclinedWhileStopped=false);
 /// <summary>What the app can see about the registered service without administrator rights.</summary>
 internal sealed record BootServiceState(bool Registered,ServiceControllerStatus? Status,bool StoppedByFailure);
 
@@ -38,7 +39,8 @@ internal static class BootServicePolicy
         if(installed is not null && installed.OwnerSid!=currentSid)return new(BootServiceAction.Skip,"로그인 전 실행: 다른 Windows 계정이 관리하는 서비스 설정을 유지함");
         if(sourceRun)return new(BootServiceAction.Skip,"소스 실행: 서비스 설치를 생략함");
         if(!force && declinedVersion==currentLabel)
-            return new(BootServiceAction.Skip,$"로그인 전 실행: 사용자가 {currentLabel} 서비스 승인 요청을 취소해 자동으로 다시 묻지 않음. 서비스가 실행 중이 아니면 키보드 따라 전환도 멈춰 있음. 트레이의 '로그인 전 실행 설치·업데이트'로 다시 요청할 수 있음");
+            return new(BootServiceAction.Skip,$"로그인 전 실행: 사용자가 {currentLabel} 서비스 승인 요청을 취소해 자동으로 다시 묻지 않음. 서비스가 실행 중이 아니면 키보드 따라 전환도 멈춰 있음. 트레이의 '로그인 전 실행 설치·업데이트'로 다시 요청할 수 있음",
+                DeclinedWhileStopped:state.Registered && state.Status!=ServiceControllerStatus.Running);
         // A stopped service of this version is the only follower this PC has: without it nothing follows the
         // keyboard, so the app asks to start it again rather than staying silent.
         return new(BootServiceAction.Prompt,sameVersion

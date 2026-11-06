@@ -50,6 +50,8 @@ internal static class ServiceRegistration
         if(!QueryServiceStatusEx(service.Value,0,out var status,Marshal.SizeOf<ServiceStatusProcess>(),out _))throw new Win32Exception();
         if(status.ProcessId!=pid || pid==0)throw new UnauthorizedAccessException("등록된 EasySwitch 서비스가 아닌 통신 상대");
     }
+    /// <summary>The user declined the approval prompt and the registered service is not running. The window then says that following is off.</summary>
+    public static volatile bool FollowStoppedAfterDecline;
     public static async Task EnsureInstalledAsync(AppLog log,bool force=false)
     {
         bool optedOut;string? declined;
@@ -69,6 +71,7 @@ internal static class ServiceRegistration
             decision=BootServicePolicy.Decide(force,optedOut,declined,installed,await WaitForRunningAsync(decision.Wait),CurrentSid,AppVersion.Current,AppVersion.Label,sourceRun,true);
         }
         log.Write(decision.Reason);
+        FollowStoppedAfterDecline=decision.DeclinedWhileStopped;
         if(decision.Action!=BootServiceAction.Prompt)return;
         try
         {
@@ -81,6 +84,7 @@ internal static class ServiceRegistration
             using var process=Process.Start(start)??throw new IOException("서비스 설치 프로그램 시작 실패");
             await process.WaitForExitAsync();
             if(process.ExitCode!=0)throw new IOException($"서비스 설치 결과 {process.ExitCode}. {Path.Combine(Root,"install-result.txt")}");
+            FollowStoppedAfterDecline=false;
             }
             finally{File.Delete(setup);}
         }
@@ -90,6 +94,8 @@ internal static class ServiceRegistration
             try{using var options=Registry.CurrentUser.CreateSubKey(@"Software\EasySwitch");options.SetValue(BootServicePolicy.DeclinedVersionValue,AppVersion.Label);}
             catch(Exception failure)when(failure is IOException or UnauthorizedAccessException or System.Security.SecurityException){log.Write("관리자 승인 취소 기록 실패: "+failure.Message);}
             log.Write($"로그인 전 실행 서비스 설치 미완료: 사용자가 관리자 승인을 취소함. {AppVersion.Label}에서는 자동으로 다시 묻지 않고 트레이의 '로그인 전 실행 설치·업데이트'로 다시 요청할 수 있음");
+            // Just declined: if the registered service is not running, nothing follows the keyboard; the screen says so.
+            FollowStoppedAfterDecline=QueryState() is {Registered:true} state && state.Status!=ServiceControllerStatus.Running;
         }
         catch(Exception error)when(error is Win32Exception or IOException){log.Write($"로그인 전 실행 서비스 설치 미완료: {error.Message}");}
     }
