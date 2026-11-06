@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using EasySwitch.Windows.Controls;
 
@@ -8,6 +9,8 @@ namespace EasySwitch.Windows;
 
 internal sealed class StartupSplash : Window
 {
+    private const double GaugeWidth = 374;
+    private const double FillDurationMilliseconds = 500;
     private readonly Border _fill;
     internal FrameworkElement Artwork { get; }
     public StartupSplash()
@@ -28,13 +31,49 @@ internal sealed class StartupSplash : Window
         gauge.Children.Add(new Border{Background=(Brush)Application.Current.Resources["Inset"],CornerRadius=new(2.5)});
         _fill=new Border{Background=(Brush)Application.Current.Resources["Point"],CornerRadius=new(2.5),HorizontalAlignment=HorizontalAlignment.Left,Width=0};
         gauge.Children.Add(_fill);body.Children.Add(gauge);
-        Artwork=new Border{Background=(Brush)Application.Current.Resources["Bg"],BorderBrush=(Brush)Application.Current.Resources["BorderStrong"],BorderThickness=new Thickness(1),CornerRadius=new(24),Child=body};
+        // The inner edge blends over the solid frame color instead of the desktop.
+        const double frameThickness = 1;
+        const double frameRadius = 24;
+        var panel = new Border
+        {
+            Background = (Brush)Application.Current.Resources["Bg"],
+            CornerRadius = new(frameRadius - frameThickness / 2),
+            Child = body
+        };
+        Artwork = new Border
+        {
+            Background = (Brush)Application.Current.Resources["BorderStrong"],
+            CornerRadius = new(frameRadius + frameThickness / 2),
+            Padding = new(frameThickness),
+            Child = panel
+        };
         Content=Artwork;
     }
-    internal void SetProgress(double value)=>_fill.Width=374*Math.Clamp(value,0,1);
-    public async Task AdvanceAsync(double value)
+
+    internal void SetProgress(double value) => _fill.Width = GaugeWidth * Math.Clamp(value, 0, 1);
+
+    internal void StartProgress() =>
+        _fill.BeginAnimation(WidthProperty, FillAnimation(0, GaugeWidth * .9));
+
+    internal async Task CompleteProgressAsync()
     {
-        SetProgress(value);
+        var animation = FillAnimation(_fill.Width, GaugeWidth);
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler finish = (_, _) => completed.TrySetResult();
+        animation.Completed += finish;
+        Closed += finish;
+        try
+        {
+            _fill.BeginAnimation(WidthProperty, animation);
+            await completed.Task;
+        }
+        finally
+        {
+            Closed -= finish;
+        }
         await Dispatcher.Yield(DispatcherPriority.Background);
     }
+
+    private static DoubleAnimation FillAnimation(double from, double to) =>
+        new(from, to, TimeSpan.FromMilliseconds((to - from) / GaugeWidth * FillDurationMilliseconds));
 }

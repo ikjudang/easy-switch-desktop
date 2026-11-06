@@ -46,6 +46,17 @@ public sealed class StartupSplashLogoTests
             Assert.Equal(0, pixels[3]);
             Assert.Contains(alpha, value => value is > 0 and < 255);
             Assert.Equal(255, pixels[^1]);
+
+            // Each scanline should become steadily more opaque toward the inside of the corner.
+            for (var y = 0; y < corner; y++)
+            {
+                for (var x = 1; x < corner; x++)
+                {
+                    var offset = y * stride + x * 4 + 3;
+                    Assert.True(pixels[offset] >= pixels[offset - 4],
+                        $"Opacity drops inside the splash corner at {scale:P0} scale, pixel ({x}, {y}).");
+                }
+            }
         }
     });
 

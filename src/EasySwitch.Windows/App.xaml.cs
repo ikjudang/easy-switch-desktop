@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using EasySwitch.Windows.Infrastructure;
 using EasySwitch.Windows.Notices;
 #if EASYSWITCH_FLOATING
@@ -187,19 +188,19 @@ public partial class App : Application
         var settingsTask=Task.Run(()=>new SettingsStore(startupDirectory is null?null:Path.Combine(startupDirectory,"fixtures")));
         var logTask=Task.Run(()=>new AppLog(startupDirectory is null?null:Path.Combine(startupDirectory,"fixtures","logs")));
         var skipSplash=startupDirectory is not null && e.Args.Contains("--skip-splash-smoke");
-        var splash=skipSplash?null:new StartupSplash();splash?.Show();
-        async Task AdvanceSplash(double value)
+        var splash=skipSplash?null:new StartupSplash();
+        if(splash is not null)
         {
-            if(splash is not null)await splash.AdvanceAsync(value);
-            else await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+            splash.Show();
+            splash.StartProgress();
         }
         try
         {
-            await AdvanceSplash(.08);
+            await Dispatcher.Yield(DispatcherPriority.Background);
             startup.Mark("SPLASH");
             var settings = await settingsTask;
             _english=settings.Value.Language=="en";
-            await AdvanceSplash(.22);
+            await Dispatcher.Yield(DispatcherPriority.Background);
             _log = await logTask;startup.Mark("LOCAL");
             CrashRecorder.Attach(_log);
             if (settings.LoadError is { } settingsError) _log.Write($"이전 설정을 읽지 못해 {(settings.RestoredFromBackup?"백업 설정으로 시작함":"기본값 사용")}: {settingsError}");
@@ -214,7 +215,7 @@ public partial class App : Application
                 try { MessageBox.Show(T("앱에서 오류가 발생했습니다. 연결 로그에서 자세한 내용을 확인해 주세요.", "An error occurred in EasySwitch. Please check the connection log for details."), "Easy Switch", MessageBoxButton.OK, MessageBoxImage.Error); }
                 finally { _errorDialogs.Exit(); }
             };
-            await AdvanceSplash(.38);
+            await Dispatcher.Yield(DispatcherPriority.Background);
             _viewModel = new MainViewModel(settings, _log, Dispatcher);
             _viewModel.EnableDeferredUiWork();
             _notices = new NoticePresenter(_viewModel);
@@ -225,11 +226,11 @@ public partial class App : Application
                 if(ServiceRegistration.Installed)_viewModel.AttachService(new ServiceClient(_log));
             }
             _viewModel.Start();startup.Mark("MONITOR");
-            await AdvanceSplash(.55);
+            await Dispatcher.Yield(DispatcherPriority.Background);
             var trayStart=e.Args.Contains("--tray");
             if(!trayStart)EnsureMainWindow();
             startup.Mark("WINDOW");
-            await AdvanceSplash(.70);
+            await Dispatcher.Yield(DispatcherPriority.Background);
 #if EASYSWITCH_FLOATING
             if(!(startupDirectory is not null && e.Args.Contains("--skip-floating-smoke") && !_viewModel.FloatingEnabled))
             {
@@ -238,10 +239,11 @@ public partial class App : Application
             }
 #endif
             CreateTray();
-            await AdvanceSplash(.88);
+            await Dispatcher.Yield(DispatcherPriority.Background);
             _ready=true;
             startup.Mark("SERVICES");
-            await AdvanceSplash(1);
+            if(splash is not null)await splash.CompleteProgressAsync();
+            else await Dispatcher.Yield(DispatcherPriority.Background);
             if (!trayStart){_window!.ShowActivated=startupDirectory is null;_window.Show();}
             await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ContextIdle);
             startup.Mark("READY");
