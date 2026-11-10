@@ -54,6 +54,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private int _codeSequence;
     private int _connectionNoticeSequence;
     private readonly LocalConnectionNotices _localConnections=new();
+    // A manual request waiting for a selected device that is not connected yet (up to 3 s). The entry lets a
+    // returning keyboard keep the request alive and a departure of that device end the wait.
+    private sealed class LateWait(long generation)
+    {
+        public long Generation { get; } = generation;
+        public volatile bool Departed;
+    }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, LateWait> _lateWaits = new();
+    private TaskCompletionSource _lateSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     // Re-checks a keyboard follow that waits for its mouse; it runs only while one is pending.
     private readonly DispatcherTimer _followExpiry=new(){Interval=TimeSpan.FromMilliseconds(500)};
     private bool _followExpiryAllowed;
@@ -213,6 +222,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         get => _settings.Value.FollowEnabled;
         set { if (value != FollowEnabled) Save(_settings.Value with { FollowEnabled = value }, $"키보드 따라 전환 {(value ? "켬" : "끔")}"); }
     }
+    public bool LateDeviceSwitchEnabled
+    {
+        get => _settings.Value.LateDeviceSwitchEnabled;
+        set { if (value != LateDeviceSwitchEnabled) Save(_settings.Value with { LateDeviceSwitchEnabled = value }, $"미연결 기기 연결 대기(최대 3초) {(value ? "켬" : "끔")}"); }
+    }
     public MainViewModel(SettingsStore settings, AppLog log, Dispatcher dispatcher)
     {
         _settings = settings;
@@ -234,9 +248,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         foreach(var entry in log.RecentCodes())CodeLogs.Add(entry);
         log.Added += OnLog;
         log.CodeAdded+=OnCode;
-        _monitor.Changed += () => { TryFollow();if(_deferUiWork)ObserveConnections(_monitor.Snapshot());Dispatch(UpdateDevices); };
+        _monitor.Changed += () => { TryFollow();SignalLateWaits();if(_deferUiWork)ObserveConnections(_monitor.Snapshot());Dispatch(UpdateDevices); };
         // Arm the follow re-check only after the signal was handled; the follow write is never delayed.
-        _monitor.HostChanged += (keyboard,target) => { OnHostChanged(keyboard,target); ArmFollowExpiry(); };
+        _monitor.HostChanged += (keyboard,target) => { OnHostChanged(keyboard,target); ArmFollowExpiry(); NoteLateDeparture(keyboard.Id); };
         _monitor.PairingInvalidated += device => Dispatch(() =>
         {
             _switches.Cancel(device.Id, "수신기 슬롯 등록이 변경됨");
@@ -260,8 +274,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 return;
             }
             _keyboardFeedback.Arrived(device);
-            // A keyboard returning to this PC makes all previous departure intent stale.
-            if (seenBefore)
+            // A keyboard returning to this PC makes all previous departure intent stale, except a channel
+            // request that is waiting for exactly this keyboard: its arrival is what that request waits for.
+            if (seenBefore && WaitingForLateManual(device.Id))
+                _log.Write($"[{device.Name}] 키보드 복귀: 수동 전환이 이 키보드의 연결을 기다리는 중이라 진행 중인 전환을 취소하지 않음");
+            else if (seenBefore)
             {
                 Interlocked.Increment(ref _batchGeneration);
                 ClearFollow("키보드의 이 PC 로컬 링크가 다시 감지됨",FollowCancel.Returned);
@@ -393,7 +410,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         if(_service is {} client && !client.IsCurrent(snapshot)){_log.Write("서비스 상태 반영 생략: 이전 연결의 응답");return;}
         var changed=_serviceDevices is null || !_serviceDevices.SequenceEqual(snapshot.Devices) || _lastDestination!=snapshot.LastDestination;
-        var preferences=snapshot.Preferences;
+        var preferences=snapshot.Preferences.WithLateDefault(_settings.Value.LateDeviceSwitchEnabled);
         if(preferences.Revision==0 && _settings.Value.EngineSettingsRevision>0)
             preferences=preferences with{Revision=preferences.ContentFingerprint==EnginePreferences.From(_settings.Value).ContentFingerprint
                 ?_settings.Value.EngineSettingsRevision:EnginePreferences.NextRevision(_settings.Value.EngineSettingsRevision)};
@@ -410,7 +427,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     internal void ApplyEnginePreferences(EnginePreferences preferences)
     {
-        preferences.Validate();var current=EnginePreferences.From(_settings.Value);
+        preferences.Validate();preferences=preferences.WithLateDefault(_settings.Value.LateDeviceSwitchEnabled);var current=EnginePreferences.From(_settings.Value);
         if(preferences.Fingerprint==current.Fingerprint)return;
         if(preferences.ContentFingerprint==current.ContentFingerprint)
         {
@@ -468,12 +485,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         // left out and only the mouse moved). A user's request goes to every selected device whose link is
         // not known to be gone and whose channel feature is known; the coordinator verifies the result.
         var devices = SelectedDevices().Where(ManualSwitchUsable).ToArray();
-        if (devices.Length == 0) { CodeEvent(code,"SKIP_LINK");_log.Write($"채널 {target + 1} 전환 생략: 선택한 기기에 사용할 수 있는 통로가 없음");LogManualExclusions(code,devices);PostNotice(code,[]);return; }
+        // With nothing ready there is no write to delay, so the devices to wait for are chosen now.
+        string[] late = devices.Length == 0 ? LateManualIds(devices) : [];
+        if (devices.Length == 0 && late.Length == 0) { CodeEvent(code,"SKIP_LINK");_log.Write($"채널 {target + 1} 전환 생략: 선택한 기기에 사용할 수 있는 통로가 없음");LogManualExclusions(code,devices,late,false);PostNotice(code,[]);return; }
         Dispatch(() => LastRequest = $"마지막 요청: 채널 {target + 1}");
         _manual.Begin(generation,target);
-        BeginNotice(code,devices.Select(d=>d.Id));
+        // A device that may still connect starts as pending ("switching" on screen); the ones not waited for
+        // are marked after the writes below are issued.
+        var othersPending = devices.Length > 0 && _settings.Value.LateDeviceSwitchEnabled && _previewDevices is null;
+        BeginNotice(code,devices.Length > 0 ? devices.Select(d=>d.Id) : late,othersPending:othersPending);
         // Start mouse writes first, before the keyboard leaves this PC.
         (HostDevice Device,SwitchOutcome Outcome)[] results;
+        SwitchOutcome?[] lateResults;
         try
         {
             var running=devices.Select(async d =>
@@ -482,32 +505,93 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 if(generation==Volatile.Read(ref _batchGeneration))PostNotice(code,[DeviceResult.FromOutcome(d.Id,d.Name,d.Info.Kind,outcome)]);
                 return (Device:d,Outcome:outcome);
             }).ToArray();
-            // The writes above are already issued; only now record the selected devices left out.
-            LogManualExclusions(code,devices);
+            // The writes above are already issued; only now pick the absent devices to wait for and record the rest.
+            if (devices.Length > 0) late = LateManualIds(devices);
+            var waiting = late.Select(id => SwitchLateAsync(id,target,reason,code,generation)).ToArray();
+            LogManualExclusions(code,devices,late,othersPending);
             results = await Task.WhenAll(running).ConfigureAwait(false);
+            lateResults = await Task.WhenAll(waiting).ConfigureAwait(false);
         }
         finally{_manual.Complete(generation);}
         if (generation != Volatile.Read(ref _batchGeneration)) return;
-        if (results.Any(r => r.Outcome is SwitchOutcome.TargetReported or SwitchOutcome.LocalLinkClosed)) PublishDestination(target);
+        if (results.Select(r => (SwitchOutcome?)r.Outcome).Concat(lateResults).Any(o => o is SwitchOutcome.TargetReported or SwitchOutcome.LocalLinkClosed)) PublishDestination(target);
         Dispatch(UpdateDevices);
+    }
+    // Selected devices a manual request cannot use now but may wait for: not ready, not leaving right now.
+    private string[] LateManualIds(HostDevice[] included)
+    {
+        if(_previewDevices is not null)return [];
+        var enabled=_settings.Value.LateDeviceSwitchEnabled;
+        return SelectedIds.Where(id=>included.All(d=>d.Id!=id) && _monitor.Find(id) is var d &&
+            LateDevicePreparation.ShouldWait(enabled,d?.DepartureSignalActive??false,d?.TransportAvailable??false,d?.LocalLinkConnected)).ToArray();
+    }
+    private bool WaitingForLateManual(string id)=>_settings.Value.LateDeviceSwitchEnabled && _lateWaits.TryGetValue(id,out var wait) && wait.Generation==Volatile.Read(ref _batchGeneration);
+    private void NoteLateDeparture(string id){if(_lateWaits.TryGetValue(id,out var wait)){wait.Departed=true;SignalLateWaits();}}
+    // Wakes the waits at once when a device changes; each wait also re-checks every 100 ms.
+    private void SignalLateWaits()
+    {
+        if(_lateWaits.IsEmpty)return;
+        Interlocked.Exchange(ref _lateSignal,new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+    }
+    // Sends the request's channel once to a selected device that connects within 3 s of the request.
+    // Cancelled waits never send later: the request generation, selection, setting and departure are
+    // checked before every attempt, and the deadline counts from the request.
+    private async Task<SwitchOutcome?> SwitchLateAsync(string id,int target,string reason,CodeRun code,long generation)
+    {
+        var wait=new LateWait(generation);_lateWaits[id]=wait;
+        var role=CodeRole(id);var name=RowIdentity(id).Name;
+        CodeEvent(code,"WAIT",role);
+        _log.Write($"[{name}] 채널 {target+1} 수동 전환 대기: 선택한 기기가 아직 이 PC에 연결되지 않아 최대 {LateDevicePreparation.WaitMilliseconds/1000}초 기다림");
+        try
+        {
+            while(true)
+            {
+                var signal=Volatile.Read(ref _lateSignal).Task;
+                var cancel=Volatile.Read(ref _stopping)!=0?"앱 종료":_powerSuspended?"절전 전환 처리 중":!IsSelectedDevice(id)?"기기 선택 변경":
+                    !_settings.Value.LateDeviceSwitchEnabled?"연결 대기 설정 꺼짐":generation!=Volatile.Read(ref _batchGeneration)?"더 최근 요청 또는 설정 변경":
+                    wait.Departed?"기기 출발 신호":null;
+                if(cancel is not null)
+                {
+                    CodeEvent(code,"CAN_PREP",role);_log.Write($"[{name}] 채널 {target+1} 수동 전환 대기 취소: {cancel}. 이 요청의 채널은 나중에 보내지 않음");
+                    PostNotice(code,[SelectedRow(id,DeviceNoticeState.Unconfirmed)]);return null;
+                }
+                var elapsed=code.Clock.ElapsedMilliseconds;
+                if(LateDevicePreparation.Expired(0,elapsed))
+                {
+                    CodeEvent(code,"CAN_EXP",role);_log.Write($"[{name}] 채널 {target+1} 수동 전환 대기 만료: {LateDevicePreparation.WaitMilliseconds/1000}초 안에 연결되지 않음. 이 요청의 채널은 나중에 보내지 않음");
+                    PostNotice(code,[SelectedRow(id,DeviceNoticeState.Unconfirmed)]);return null;
+                }
+                if(_monitor.Find(id) is {} device && LateDevicePreparation.Ready(device.TransportAvailable,device.LocalLinkConnected,device.Restoring,device.Info.FeatureIndex,device.HostCount,device.Info.Online))
+                {
+                    var outcome=await SwitchWithCodeAsync(device,target,reason,code,generation).ConfigureAwait(false);
+                    _log.Write($"[{device.Name}] 채널 {target+1} 수동 전환: 요청 {elapsed}ms 뒤 연결된 기기에 보냄");
+                    if(generation==Volatile.Read(ref _batchGeneration))PostNotice(code,[DeviceResult.FromOutcome(device.Id,device.Name,device.Info.Kind,outcome)]);
+                    return outcome;
+                }
+                await Task.WhenAny(signal,Task.Delay((int)Math.Clamp(LateDevicePreparation.WaitMilliseconds-elapsed,1,100))).ConfigureAwait(false);
+            }
+        }
+        finally{_lateWaits.TryRemove(new KeyValuePair<string,LateWait>(id,wait));}
     }
     // Restoring devices are left out because channel commands wait for the cached identity check.
     private static bool ManualSwitchUsable(HostDevice d)=>d.TransportAvailable && d.LocalLinkConnected != false && !d.Restoring && d.Info.FeatureIndex != 0 && d.HostCount > 0;
-    // Every selected device that a manual request did not write to gets its own reason. The state is
-    // read after the writes were issued, so a device that became ready meanwhile says so.
-    private void LogManualExclusions(CodeRun code,HostDevice[] included)
+    // Every selected device that a manual request neither wrote to nor waits for gets its own reason. The
+    // state is read after the writes were issued, so a device that became ready meanwhile says so.
+    private void LogManualExclusions(CodeRun code,HostDevice[] included,string[] late,bool pendingShown)
     {
         foreach(var id in SelectedIds)
         {
-            if(included.Any(d=>d.Id==id))continue;
+            if(included.Any(d=>d.Id==id) || late.Contains(id))continue;
             var device=_monitor.Find(id);
             var reason=device is null?"이 PC에서 기기 통로를 찾지 못함":!device.TransportAvailable?"HID 통로 없음":
                 device.LocalLinkConnected==false?"이 PC 로컬 링크 없음(다른 호스트에 있거나 꺼짐)":
                 device.Restoring?"캐시 복원 확인 중(기기 정보 확인 전에는 채널 명령을 보내지 않음)":
                 device.Info.FeatureIndex==0 || device.HostCount<=0?"채널 전환 기능(0x1814) 미확인":"요청 시점에는 준비되지 않았고 지금은 준비됨";
+            var wait=_previewDevices is not null?"":_settings.Value.LateDeviceSwitchEnabled?". 이 PC를 떠나는 중이라 연결을 기다리지 않음":". 미연결 기기 연결 대기가 꺼져 있어 기다리지 않음";
             var name=device?.Name??_settings.Value.SelectedDeviceNames.FirstOrDefault(d=>d.Id==id)?.Name??id[..Math.Min(8,id.Length)];
             CodeEvent(code,"SKIP_LINK",CodeRole(id));
-            _log.Write($"[{name}] 채널 {code.Target+1} 수동 전환 대상에서 제외: {reason}");
+            _log.Write($"[{name}] 채널 {code.Target+1} 수동 전환 대상에서 제외: {reason}{wait}");
+            if(pendingShown)PostNotice(code,[SelectedRow(id,DeviceNoticeState.Unavailable)]);
         }
     }
 
@@ -562,7 +646,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 ClearFollow("마우스 준비 대기 10초 만료. 오래된 전환을 보내지 않음",FollowCancel.Expired);
                 return false;
             }
-            var waiting=new List<string>();var ready=new List<HostDevice>();
+            var waiting=new List<string>();var ready=new List<HostDevice>();List<string>? notWaited=null;
             foreach(var id in intent.MouseIds)
             {
                 var mouse=_monitor.Find(id);
@@ -574,11 +658,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 }
                 var readiness=FollowPreparation.Readiness(mouse is not null,mouse?.TransportAvailable??false,mouse?.LocalLinkConnected,mouse?.Info.Online??false,mouse?.HostCount??0,_observedArrivals.ContainsKey(id));
                 if(readiness==FollowReadiness.Exclude){CodeEvent(intent.Code,"SKIP_LINK",CodeRole(id));_log.Write($"[{mouse!.Name}] 따라 전환 대상 제외: 이 실행에서 로컬 연결을 확인한 적이 없고 다른 호스트에 있음");PostNotice(intent.Code,[NoticeRow(id,DeviceNoticeState.Unavailable)]);continue;}
-                if(readiness==FollowReadiness.Wait){waiting.Add(id);continue;}
+                if(readiness==FollowReadiness.Wait)
+                {
+                    // With the late-device setting off a mouse that is still preparing is left out, as on macOS.
+                    if(!_settings.Value.LateDeviceSwitchEnabled){(notWaited??=[]).Add(id);continue;}
+                    waiting.Add(id);continue;
+                }
                 ready.Add(mouse!);
             }
             _pendingFollow=waiting.Count==0?null:intent with {MouseIds=waiting.ToArray()};
             if(ready.Count>0)ExecuteFollowAsync(ready.ToArray(),intent.Target,Volatile.Read(ref _batchGeneration),intent.Code,intent.At).LogFaults(_log,"따라 전환 처리");
+            // Recorded after the ready mice's writes were started.
+            foreach(var id in notWaited??[])
+            {
+                CodeEvent(intent.Code,"SKIP_LINK",CodeRole(id));
+                _log.Write($"[{_monitor.Find(id)?.Name??RowIdentity(id).Name}] 따라 전환 대상 제외: 마우스가 아직 준비되지 않았고 미연결 기기 연결 대기가 꺼져 있어 기다리지 않음");
+                PostNotice(intent.Code,[NoticeRow(id,DeviceNoticeState.Unavailable)]);
+            }
             return ready.Count>0;
         }
     }
@@ -610,20 +706,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
         TryFollow();ArmFollowExpiry();return true;
     }
-    private void BeginNotice(CodeRun code,IEnumerable<string> switching,string? keyboard=null)
+    // othersPending: a manual request may still wait for the selected devices it is not sending to yet.
+    private void BeginNotice(CodeRun code,IEnumerable<string> switching,string? keyboard=null,bool othersPending=false)
     {
         var sending=switching.ToHashSet();var ids=SelectedIds;
         void Publish()=>PostNotice(code,ids.Select(id=>
         {
-            var info=_monitor.Find(id)?.Info ?? _previewDevices?.FirstOrDefault(d=>d.Id==id);
-            var cached=_settings.Value.SelectedDeviceNames.FirstOrDefault(d=>d.Id==id);
-            var name=info?.Name??cached?.Name??(id==KeyboardId?_settings.Value.KeyboardName??T("키보드","Keyboard"):id==MouseId?_settings.Value.MouseName??T("마우스","Mouse"):T("기기","Device"));
-            var kind=KnowsRole(id,"키보드")?"키보드":KnowsRole(id,"마우스")?"마우스":info?.Kind??cached?.Kind??"기기";
-            var state=id==keyboard?DeviceNoticeState.SignalObserved:sending.Contains(id)?DeviceNoticeState.Switching:keyboard is not null && kind=="마우스"?DeviceNoticeState.Waiting:DeviceNoticeState.Unavailable;
+            var (name,kind)=RowIdentity(id);
+            var state=id==keyboard?DeviceNoticeState.SignalObserved:sending.Contains(id)?DeviceNoticeState.Switching:(keyboard is not null && kind=="마우스") || othersPending?DeviceNoticeState.Waiting:DeviceNoticeState.Unavailable;
             return new DeviceResult(name,null,kind,id,state);
         }).ToArray());
         if(_deferUiWork)Publish();else Dispatch(Publish);
     }
+    // Name and kind of a selected device for its notice row, also when it is not connected.
+    private (string Name,string Kind) RowIdentity(string id)
+    {
+        var info=_monitor.Find(id)?.Info ?? _previewDevices?.FirstOrDefault(d=>d.Id==id);
+        var cached=_settings.Value.SelectedDeviceNames.FirstOrDefault(d=>d.Id==id);
+        var name=info?.Name??cached?.Name??(id==KeyboardId?_settings.Value.KeyboardName??T("키보드","Keyboard"):id==MouseId?_settings.Value.MouseName??T("마우스","Mouse"):T("기기","Device"));
+        var kind=KnowsRole(id,"키보드")?"키보드":KnowsRole(id,"마우스")?"마우스":info?.Kind??cached?.Kind??"기기";
+        return (name,kind);
+    }
+    private DeviceResult SelectedRow(string id,DeviceNoticeState state){var (name,kind)=RowIdentity(id);return new(name,null,kind,id,state);}
     private void PostNotice(CodeRun code,IReadOnlyList<DeviceResult> rows)
     {
         var notice=new SwitchNotice(T($"채널 {code.Target+1} 전환",$"Switch to channel {code.Target+1}"),rows,code.Id);
@@ -752,6 +856,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             Interlocked.Increment(ref _batchGeneration);
             ClearFollow(reason,FollowCancel.Settings);
             _switches.CancelAll(reason);
+            SignalLateWaits();
             _log.Write(reason);
             CodeSettings();
             UpdateDevices();

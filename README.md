@@ -10,7 +10,7 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 
 ### 다운로드
 
-- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-win-x64.exe) · [비압축 단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-uncompressed-win-x64.exe) · [비압축 ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-uncompressed-win-x64.zip) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-fast-win-x64.zip)
+- Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-win-x64.exe) · [비압축 단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.exe) · [비압축 ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.zip) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-fast-win-x64.zip)
 - macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -25,7 +25,7 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 같은 버전의 서비스 형식을 수동으로 바꾸는 다음 명령은 **앱을 사용하는 본인 Windows 계정이 관리자 계정일 때만** 사용합니다. 다른 관리자 계정의 자격 증명으로 승인해야 한다면 이 수동 명령을 사용하지 말고, 이전 버전에서 앱의 일반 업데이트 절차를 이용합니다. 사용자가 실행 파일 폴더의 PowerShell에서 명령을 실행합니다.
 
 ```powershell
-$installer = Start-Process -FilePath .\EasySwitch-0.2.43-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
+$installer = Start-Process -FilePath .\EasySwitch-0.2.44-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
 $installer.ExitCode
 ```
 
@@ -74,7 +74,9 @@ $installer.ExitCode
 
 ### 설정과 알림
 
-설정에서 언어, 플로팅 버튼, 마우스 따라가기, 연결 로그와 로그 자동 저장을 관리합니다. 언어는 한국어와 English를 지원합니다.
+설정에서 언어, 플로팅 버튼, 마우스 따라가기, 연결 대기, 연결 로그와 로그 자동 저장을 관리합니다. 언어는 한국어와 English를 지원합니다.
+
+**연결 대기 기기 포함 전환**이 켜져 있으면(기본값), 사용자가 채널을 누를 때 아직 이 PC에 연결 중인 선택 기기가 있는 경우 앱이 잠시 기다렸다가 그 기기도 같은 채널로 전환합니다. 이 설정을 끄면 앱은 연결되지 않은 기기를 기다리지 않고, 키보드를 따라 전환할 때도 아직 준비되지 않은 마우스를 기다리지 않습니다.
 
 토스트는 기기의 연결과 채널 전환 상태를 안내합니다. 이 안내는 앱이 관찰한 처리 상태이며, 다른 기기에서 실제 입력이 작동하는지는 사용자가 확인합니다.
 
@@ -118,7 +120,7 @@ Apps are available for Windows and macOS. The guide below is based on the Window
 
 ### Download
 
-- Windows: [Single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-win-x64.exe) · [Uncompressed single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-uncompressed-win-x64.exe) · [Uncompressed ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-uncompressed-win-x64.zip) · [Fast-start package](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.43/EasySwitch-0.2.43-fast-win-x64.zip)
+- Windows: [Single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-win-x64.exe) · [Uncompressed single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.exe) · [Uncompressed ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.zip) · [Fast-start package](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-fast-win-x64.zip)
 - macOS: [App package](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS guide (Korean)](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - All release files and update notes: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
@@ -133,7 +135,7 @@ To change to a different package format of the same version, quit the running ap
 Use the following command, which manually changes the service format for the same version, **only if the Windows account you use the app with is itself an administrator account**. If approval requires the credentials of a different administrator account, do not use this manual command; use the app's normal update procedure from an earlier version instead. Run the command in PowerShell in the folder that contains the executable.
 
 ```powershell
-$installer = Start-Process -FilePath .\EasySwitch-0.2.43-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
+$installer = Start-Process -FilePath .\EasySwitch-0.2.44-uncompressed-win-x64.exe -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru
 $installer.ExitCode
 ```
 
@@ -182,7 +184,9 @@ When you run the file of a newer version, the app replaces the older version tha
 
 ### Settings and notifications
 
-In Settings, you can manage the language, the floating button, mouse following, the connection log, and automatic log saving. The app supports Korean and English.
+In Settings, you can manage the language, the floating button, mouse following, waiting for connecting devices, the connection log, and automatic log saving. The app supports Korean and English.
+
+When **Wait for connecting devices** is on (the default) and you press a channel while a selected device is still connecting to this PC, the app waits briefly and then switches that device to the same channel as well. When it is off, the app does not wait for devices that are not connected, and it does not wait for a mouse that is not ready when following the keyboard.
 
 Toasts show the connection and channel-switch status of your devices. They report the processing status that the app observed; whether input actually works on the other device is for you to check.
 

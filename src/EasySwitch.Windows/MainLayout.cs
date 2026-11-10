@@ -350,6 +350,7 @@ public partial class MainWindow
         toastContent.Children.Add(BuildPercentRow("size",true));toastContent.Children.Add(BuildPercentRow("opacity",true));
         _toastSection=new AnimatedSection{Child=toastContent,Tag="ToastSettings"};_toastSection.SetExpanded(_toastExpanded,false);((StackPanel)toast.Child).Children.Add(_toastSection);cards.Children.Add(toast);
         cards.Children.Add(SettingsRow(T("키보드 따라 마우스 전환","Follow keyboard with mouse"),"follow",toggle:nameof(MainViewModel.FollowEnabled)));
+        cards.Children.Add(SettingsRow(T("연결 대기 기기 포함 전환","Wait for connecting devices"),"follow",toggle:nameof(MainViewModel.LateDeviceSwitchEnabled)));
         var logDetail=new StackPanel{Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(0)};
         var logCount=Text("",11,"TextMuted");logCount.FontFamily=(FontFamily)FindResource("SpaceMono");logCount.SetBinding(TextBlock.TextProperty,new Binding(nameof(MainViewModel.LogSummary)));logDetail.Children.Add(logCount);var logArrow=Icon(_vm!.IsLog?"chevron-left":"chevron-right",12,_vm.IsLog?"PointTintText":"Text2");logArrow.Margin=new Thickness(10,0,0,0);logDetail.Children.Add(logArrow);
         var logRow=SettingsRow(T("연결 로그","Connection log"),"clock",()=>_vm.ToggleLogCommand.Execute(null),detail:logDetail,selected:_vm.IsLog);logRow.Tag="ConnectionLogCard";if(_vm.IsLog){logRow.Background=B("PointTintBg");logRow.BorderBrush=B("Point");}cards.Children.Add(logRow);

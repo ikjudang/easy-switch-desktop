@@ -13,7 +13,7 @@ using EasySwitch.Windows.Infrastructure;
 namespace EasySwitch.Windows.Tests;
 
 // Synthetic transports only: departure signals, setCurrentHost replies, channel closure and polling logs.
-public sealed class SwitchSignalPathTests : IDisposable
+public sealed partial class SwitchSignalPathTests : IDisposable
 {
     private const BindingFlags Hidden = BindingFlags.Instance | BindingFlags.NonPublic;
     private readonly string _root = Path.Combine(Path.GetTempPath(), "EasySwitch.Tests", Guid.NewGuid().ToString("N"));
@@ -519,13 +519,14 @@ public sealed class SwitchSignalPathTests : IDisposable
         Assert.Equal(0, keyWire.Writes);
     });
 
+    // With the late-device wait on (the default) this mouse is waited for instead; see LateManualSwitch tests.
     [Fact]
     public Task ManualSwitchLogsEachExcludedDeviceAfterTheWritesAreIssued() => Sta(async () =>
     {
         using var log = Log();
         var keyWire = new FakeWire("keyboard", receiver: false) { CloseOnWrite = true };
         var mouseWire = new FakeWire("mouse", receiver: false) { Name = "Mouse", Kind = 3 };
-        await using var vm = Model(log, keyWire, mouseWire, out _, out var keyboard, out _);
+        await using var vm = Model(log, keyWire, mouseWire, out _, out var keyboard, out _, late: false);
         await keyboard.RefreshAsync(default); // the mouse never answered
         var writesWhenLogged = -1;
         log.Added += entry => { if (entry.Message.Contains("수동 전환 대상에서 제외")) writesWhenLogged = keyWire.Writes; };
@@ -600,11 +601,11 @@ public sealed class SwitchSignalPathTests : IDisposable
         return device.Id;
     }
 
-    private MainViewModel Model(AppLog log, FakeWire keyWire, FakeWire mouseWire, out DeviceMonitor monitor, out HostDevice keyboard, out HostDevice mouse)
+    private MainViewModel Model(AppLog log, FakeWire keyWire, FakeWire mouseWire, out DeviceMonitor monitor, out HostDevice keyboard, out HostDevice mouse, bool late = true)
     {
         var keyboardId = new HostDevice(keyWire, 0xFF, log).Id; var mouseId = new HostDevice(mouseWire, 0xFF, log).Id;
         var store = new SettingsStore(Path.Combine(_root, "settings", Guid.NewGuid().ToString("N")));
-        store.Save(new() { FollowEnabled = true, SelectedDeviceIds = [keyboardId, mouseId], SelectedDeviceNames = [new(keyboardId, keyWire.Name, "키보드"), new(mouseId, mouseWire.Name, "마우스")] });
+        store.Save(new() { FollowEnabled = true, LateDeviceSwitchEnabled = late, SelectedDeviceIds = [keyboardId, mouseId], SelectedDeviceNames = [new(keyboardId, keyWire.Name, "키보드"), new(mouseId, mouseWire.Name, "마우스")] });
         var vm = new MainViewModel(store, log, Dispatcher.CurrentDispatcher);
         monitor = (DeviceMonitor)typeof(MainViewModel).GetField("_monitor", Hidden)!.GetValue(vm)!;
         keyboard = monitor.RegisterDevice(keyWire, 0xFF, () => _now);
@@ -682,10 +683,13 @@ public sealed class SwitchSignalPathTests : IDisposable
         private static byte[] Reply(HidppFrame request, byte[] parameters) =>
             HidppFrame.Build(request.FeatureIndex, request.FunctionId, parameters.Length > 3 ? ReportType.Long : ReportType.Short, request.DeviceIndex, request.SoftwareId, parameters).ToBytes();
 
+        // Runs after a write is recorded, e.g. to deliver the departure echo a keyboard sends when it leaves.
+        public Action<byte[]>? AfterSend;
         public Task SendAsync(byte[] request, CancellationToken cancel)
         {
             LastWrite = request; Interlocked.Increment(ref _writes);
             if (CloseOnWrite) IsOpen = false;
+            AfterSend?.Invoke(request);
             return Task.CompletedTask;
         }
     }

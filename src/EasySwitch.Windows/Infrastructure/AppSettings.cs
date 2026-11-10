@@ -5,6 +5,8 @@ namespace EasySwitch.Windows.Infrastructure;
 public sealed record AppSettings
 {
     public bool FollowEnabled { get; init; }
+    /// <summary>A channel request waits up to 3 s for a selected device that is not connected yet. Off also leaves a preparing mouse out of a follow.</summary>
+    public bool LateDeviceSwitchEnabled { get; init; } = true;
     public string? KeyboardId { get; init; }
     public string? KeyboardName { get; init; }
     public string? MouseId { get; init; }

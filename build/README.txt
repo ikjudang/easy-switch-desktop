@@ -1,6 +1,6 @@
-EasySwitch Windows 0.2.43
+EasySwitch Windows 0.2.44
 
-이 폴더의 EasySwitch-0.2.43-win-x64.exe 파일을 실행합니다. 별도의 런타임 설치는 필요 없습니다.
+이 폴더의 EasySwitch-0.2.44-win-x64.exe 파일을 실행합니다. 별도의 런타임 설치는 필요 없습니다.
 업데이트와 다른 배포 파일: https://github.com/ikjudang/easy-switch-desktop/releases
 
 빠른 실행 패키지는 압축을 푼 뒤 EasySwitch.exe를 실행합니다.
@@ -11,7 +11,7 @@ EasySwitch Windows 0.2.43
 이전 버전에서 처음 업데이트할 때 이 파일을 실행하고 앱의 서비스 업데이트 요청을 허용하면 서비스도 같은 형식으로 설치됩니다.
 같은 버전의 서비스 형식을 수동으로 바꾸는 다음 명령은 앱을 사용하는 본인 Windows 계정이 관리자 계정일 때만 사용합니다.
 다른 관리자 계정의 자격 증명으로 승인해야 한다면 이 수동 명령을 사용하지 말고 이전 버전에서 앱의 일반 업데이트 절차를 이용합니다.
-PowerShell: $installer = Start-Process -FilePath ".\EasySwitch-0.2.43-win-x64.exe" -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru; $installer.ExitCode
+PowerShell: $installer = Start-Process -FilePath ".\EasySwitch-0.2.44-win-x64.exe" -ArgumentList '--install-service' -Verb RunAs -Wait -PassThru; $installer.ExitCode
 종료 코드 0은 설치 성공입니다. 다른 값이면 %ProgramData%\EasySwitch\Service\install-result.txt를 확인합니다.
 이번 시험판의 메모리 절감 표시 방식을 확인하려면 EasySwitch를 트레이에서 완전히 종료한 뒤
 실행 파일에 --memory-test 옵션을 붙여 다시 실행합니다. 이 옵션은 앱 설정에 저장되지 않습니다.

@@ -54,16 +54,18 @@ internal sealed class ServiceClient(AppLog log,string? fixturePipe=null,int? fix
         EnginePreferences? restored;
         lock(_configurationGate)restored=_compareInitialPreferences && revision==_configurationRevision?_restoredPreferences:null;
         if(restored is null)return;
+        // A service from before a preference existed does not report it; that gap is not a difference.
+        var service=state.Preferences.WithLateDefault(restored.LateDeviceSwitchEnabled);
         // The subscriber keeps a backup of both selections. If writing it fails, the comparison still has to finish:
         // throwing here would drop the pipe and fail again on every reconnect, leaving manual switching unusable.
-        try{InitialPreferencesCompared?.Invoke(state.Preferences);}
+        try{InitialPreferencesCompared?.Invoke(service);}
         catch(Exception error){log.Write("서비스 초기 동기화의 선택 백업 실패(동기화는 계속함): "+error);}
         bool restore;
         lock(_configurationGate)
         {
             // A user edit made during the comparison takes precedence over startup restoration.
             if(!_compareInitialPreferences || revision!=_configurationRevision)return;
-            restore=restored.PreferRestoredOver(state.Preferences);
+            restore=restored.PreferRestoredOver(service);
             _compareInitialPreferences=false;_restoredPreferences=null;
             if(restore)Interlocked.Exchange(ref _preferences,new(restored,Interlocked.Increment(ref _configurationRevision)));
         }

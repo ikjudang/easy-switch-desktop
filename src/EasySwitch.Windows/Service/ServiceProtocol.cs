@@ -5,12 +5,17 @@ using EasySwitch.Windows.Infrastructure;
 
 namespace EasySwitch.Windows.Service;
 
+// LateDeviceSwitchEnabled is null when the other side is a version before the setting existed. Such a
+// side neither stores nor reports it, so the receiver keeps its own value instead of reading the gap as a change.
 internal sealed record EnginePreferences(bool FollowEnabled,string? KeyboardId,string? KeyboardName,string? MouseId,string? MouseName,
-    string[]? SelectedDeviceIds,DeviceInfoCache[] SelectedDeviceNames,string Language,string[] ChannelLabels,long Revision=0)
+    string[]? SelectedDeviceIds,DeviceInfoCache[] SelectedDeviceNames,string Language,string[] ChannelLabels,long Revision=0,bool? LateDeviceSwitchEnabled=null)
 {
-    public static EnginePreferences From(AppSettings s)=>new(s.FollowEnabled,s.KeyboardId,s.KeyboardName,s.MouseId,s.MouseName,s.SelectedDeviceIds,s.SelectedDeviceNames,s.Language,s.ChannelLabels,s.EngineSettingsRevision);
+    public static EnginePreferences From(AppSettings s)=>new(s.FollowEnabled,s.KeyboardId,s.KeyboardName,s.MouseId,s.MouseName,s.SelectedDeviceIds,s.SelectedDeviceNames,s.Language,s.ChannelLabels,s.EngineSettingsRevision,s.LateDeviceSwitchEnabled);
     public AppSettings Apply(AppSettings s)=>s with{FollowEnabled=FollowEnabled,KeyboardId=KeyboardId,KeyboardName=KeyboardName,MouseId=MouseId,MouseName=MouseName,
-        SelectedDeviceIds=SelectedDeviceIds,SelectedDeviceNames=SelectedDeviceNames,Language=Language,ChannelLabels=ChannelLabels,EngineSettingsRevision=Revision};
+        SelectedDeviceIds=SelectedDeviceIds,SelectedDeviceNames=SelectedDeviceNames,Language=Language,ChannelLabels=ChannelLabels,EngineSettingsRevision=Revision,
+        LateDeviceSwitchEnabled=LateDeviceSwitchEnabled??s.LateDeviceSwitchEnabled};
+    /// <summary>Fills a value the other side did not send with this side's own, so fingerprints compare only what both sides know.</summary>
+    public EnginePreferences WithLateDefault(bool? own)=>LateDeviceSwitchEnabled is null && own is not null?this with{LateDeviceSwitchEnabled=own}:this;
     [System.Text.Json.Serialization.JsonIgnore] public string Fingerprint=>JsonSerializer.Serialize(this);
     [System.Text.Json.Serialization.JsonIgnore] public string ContentFingerprint=>JsonSerializer.Serialize(this with{Revision=0});
     [System.Text.Json.Serialization.JsonIgnore] public bool HasSelectionPreference=>SelectedDeviceIds is not null || !string.IsNullOrEmpty(KeyboardId) || !string.IsNullOrEmpty(MouseId);
