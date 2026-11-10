@@ -36,8 +36,9 @@ struct AppGlyph: View {
                 path.addRoundedRect(in: CGRect(x: 7, y: 2, width: 10, height: 20), cornerSize: .init(width: 5, height: 5))
                 line([.init(x: 12, y: 5), .init(x: 12, y: 9)])
             case "refresh":
-                path.addArc(center: .init(x: 12, y: 12), radius: 7.5,
-                            startAngle: .degrees(-30), endAngle: .degrees(320), clockwise: false)
+                // The Windows path as an arc: M20 6V11H15M19.2 10A7.5 7.5 0 1 0 19 17
+                path.addArc(center: .init(x: 12.47, y: 13.31), radius: 7.5,
+                            startAngle: .degrees(-26.19), endAngle: .degrees(29.47), clockwise: true)
                 line([.init(x: 20, y: 6), .init(x: 20, y: 11), .init(x: 15, y: 11)])
             case "clock":
                 path.addEllipse(in: .init(x: 4, y: 4, width: 16, height: 16))

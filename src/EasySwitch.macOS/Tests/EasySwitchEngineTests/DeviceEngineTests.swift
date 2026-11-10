@@ -26,12 +26,15 @@ private actor DiscoveryDriver: HIDDriving {
     private var requests: [(device: String, bytes: [UInt8])] = []
     private var featureIndices: [UInt8: UInt8] = [:]
     private var holdFeatureLookups = false
+    private var rejectedSlots: Set<UInt8> = []
+    private var hostWriteErrorCode: UInt8?
     private var heldReplies: [(device: String, bytes: [UInt8])] = []
     private var heldHostInfoDevices: Set<String> = []
     private var heldHostReplies: [(device: String, bytes: [UInt8])] = []
     private var ignoredHostInfo: Set<String> = []
     private var hostWrites: [[UInt8]] = []
     private var hostWriteDevices: [String] = []
+    private var hostWriteDepartures: [String: Bool] = [:]
     private var receiverFlags: [UInt8]?
     private var notificationWrites = 0
     private var metadataReplies: Bool
@@ -65,6 +68,10 @@ private actor DiscoveryDriver: HIDDriving {
         guard bytes.count >= 7, responsiveSlots.contains(bytes[1]), endpoints.contains(where: { $0.id == deviceID }) else { return }
         var parameters: [UInt8]
         let slot = bytes[1]
+        if rejectedSlots.contains(slot) {
+            // HID++ 1.0 error 9 (invalid device index): the receiver slot is empty for now.
+            onEvent?(.report(deviceID: deviceID, reportID: 0x10, bytes: [0x10, slot, 0x8F, bytes[2], bytes[3], 9, 0])); return
+        }
         let changeHostIndex = featureIndices[slot] ?? 9
         let isMouse = slot == 2 || deviceID.contains("mouse")
         let name = Array((isMouse ? "MX Master 3S" : "MX KEYS S").utf8)
@@ -77,6 +84,16 @@ private actor DiscoveryDriver: HIDDriving {
         case (let feature, 1) where feature == changeHostIndex:
             hostWrites.append(bytes)
             hostWriteDevices.append(deviceID)
+            if let code = hostWriteErrorCode {
+                onEvent?(.report(deviceID: deviceID, reportID: 0x10, bytes: [0x10, slot, 0xFF, bytes[2], bytes[3], code, 0]))
+            }
+            if let echo = hostWriteDepartures[deviceID] {
+                if echo {
+                    onEvent?(.report(deviceID: deviceID, reportID: 0x11,
+                        bytes: [0x11, slot, changeHostIndex, 0, 0, bytes[4]] + Array(repeating: 0, count: 14)))
+                }
+                remove(deviceID)
+            }
             return
         case (3, 2): parameters = [isMouse ? 3 : 0]
         case (3, 0): parameters = [UInt8(name.count)]
@@ -137,6 +154,11 @@ private actor DiscoveryDriver: HIDDriving {
         let notice: [UInt8] = [0x10, slot, 0x41, 0x10, 1, UInt8(productID & 255), UInt8(productID >> 8)]
         onEvent?(.report(deviceID: deviceID, reportID: 0x10, bytes: notice))
     }
+    func useChangeHostIndex(slot: UInt8, index: UInt8) { featureIndices[slot] = index }
+    func reject(slot: UInt8) { rejectedSlots.insert(slot) }
+    func answerHostWrites(withError code: UInt8) { hostWriteErrorCode = code }
+    func departAfterHostWrite(deviceID: String, echo: Bool = false) { hostWriteDepartures[deviceID] = echo }
+    func accept(slot: UInt8) { rejectedSlots.remove(slot) }
     func changeFeatureIndex(slot: UInt8, index: UInt8) {
         featureIndices[slot] = index
         holdFeatureLookups = true
@@ -152,12 +174,16 @@ private actor DiscoveryDriver: HIDDriving {
 private actor DiscoveryEvents {
     private var invalidated: Set<String> = []
     private var connected: [NoticeRow] = []
+    private var switchRows: [NoticeRow] = []
     func record(_ event: EngineEvent) {
         if case .selectionInvalidated(let id) = event { invalidated.insert(id) }
         if case .notice(_, _, let rows, connection: true) = event { connected.append(contentsOf: rows) }
+        if case .notice(_, _, let rows, connection: false) = event { switchRows.append(contentsOf: rows) }
     }
     func containsInvalidation(_ id: String) -> Bool { invalidated.contains(id) }
     var connectionNoticeCount: Int { connected.count }
+    func switchStates(_ id: String) -> [NoticeState] { switchRows.filter { $0.id == id }.map(\.state) }
+    func switchNotices(_ id: String) -> [NoticeRow] { switchRows.filter { $0.id == id } }
 }
 
 private actor ManualNoticeGate {
@@ -214,6 +240,317 @@ private func discoveryEventually(attempts: Int = 1_000, _ condition: @escaping @
 
 @Suite("Discovery through real HID++ request and callback boundaries")
 struct DeviceEngineTests {
+    @Test func lateManualSwitchWaitsForKeyboardAfterEasySwitchKeyDeparture() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [keyboard], responsiveSlots: [0xFF])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
+        await driver.injectReport(deviceID: keyboard.id, reportID: 0x11,
+            bytes: [0x11, 0xFF, 9, 0, 0, 2] + Array(repeating: 0, count: 14))
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("[keyboard#255] 출발 신호: 채널 3") } })
+        await driver.remove(keyboard.id)
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == false })
+        let keyboardBack = discoveryEndpoint("keyboard-back", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        await driver.departAfterHostWrite(deviceID: keyboardBack.id)
+        let request = Task { await engine.switchChannel(3, source: "P") }
+        try await Task.sleep(for: .milliseconds(500))
+        await driver.add(keyboardBack)
+        await request.value
+        #expect(await driver.hostWriteTargets(deviceID: keyboardBack.id) == [2])
+        await engine.stop()
+    }
+
+    @Test func lateManualSwitchWaitsForKeyboardAfterDepartureEcho() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let mouse = discoveryEndpoint("mouse", physicalID: "mouse", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [keyboard, mouse], responsiveSlots: [0xFF])
+        await driver.departAfterHostWrite(deviceID: keyboard.id, echo: true)
+        await driver.departAfterHostWrite(deviceID: mouse.id)
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: "mouse#255", followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().filter(\.online).count == 2 })
+        await engine.switchChannel(3, source: "P")
+        #expect(await driver.hostWriteTargets(deviceID: keyboard.id) == [2])
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("따라가기 생략: 수동 요청 에코") } })
+        let mouseBack = discoveryEndpoint("mouse-back", physicalID: "mouse", receiver: false, reportIDs: [0x11])
+        await driver.add(mouseBack)
+        #expect(await discoveryEventually { await engine.currentDevices().first { $0.id == "mouse#255" }?.online == true })
+        let keyboardBack = discoveryEndpoint("keyboard-back", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        await driver.departAfterHostWrite(deviceID: keyboardBack.id)
+        let request = Task { await engine.switchChannel(3, source: "P") }
+        try await Task.sleep(for: .milliseconds(500))
+        await driver.add(keyboardBack)
+        await request.value
+        #expect(await driver.hostWriteTargets(deviceID: keyboardBack.id) == [2])
+        await engine.stop()
+    }
+
+    @Test func manualSwitchSendsOnceToKeyboardArrivingOneSecondLater() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [], responsiveSlots: [0xFF])
+        await driver.departAfterHostWrite(deviceID: keyboard.id)
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        let events = DiscoveryEvents()
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { event in Task { await events.record(event) } }
+        let request = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("수동 전환 대기: 미연결 기기 연결 대기; 최대 3초") } })
+        #expect(await discoveryEventually { await events.switchStates("keyboard#255") == [.switching] })
+        try await Task.sleep(for: .seconds(1))
+        await driver.add(keyboard)
+        #expect(await discoveryEventually { await driver.hostWriteTargets(deviceID: keyboard.id) == [1] })
+        await request.value
+        #expect(await driver.hostWriteTargets(deviceID: keyboard.id) == [1])
+        #expect(await discoveryEventually { await events.switchStates("keyboard#255").last == .complete })
+        await engine.stop()
+    }
+
+    @Test func manualSwitchExpiresAfterThreeSecondsWithoutKeyboardAndDoesNotReplay() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [], responsiveSlots: [0xFF])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        let events = DiscoveryEvents()
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { event in Task { await events.record(event) } }
+        let start = ContinuousClock.now
+        await engine.switchChannel(2)
+        #expect(start.duration(to: .now) >= .seconds(3))
+        #expect(await driver.hostWriteCount == 0)
+        #expect(await log.recentLines().contains { $0.contains("[keyboard#255] 수동 전환 대기 만료: 3초 안에 연결 안 됨") })
+        #expect(await log.recentCodes().contains { $0.contains("|CAN_EXP|") })
+        #expect(await discoveryEventually { await events.switchStates("keyboard#255").last == .unconfirmed })
+        await driver.add(keyboard)
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await driver.hostWriteCount == 0)
+        await engine.stop()
+    }
+
+    @Test func disabledLateDeviceSwitchSkipsAbsentKeyboard() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [], responsiveSlots: [0xFF])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true, lateDeviceSwitchEnabled: false)
+        try await engine.start { _ in }
+        await engine.switchChannel(2)
+        await driver.add(keyboard)
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await driver.hostWriteCount == 0)
+        #expect(await log.recentLines().contains { $0.contains("[keyboard#255] 수동 전환 생략: 선택한 기기의 로컬 연결 없음") })
+        #expect(await log.recentCodes().allSatisfy { !$0.contains("|WAIT|") })
+        await engine.stop()
+    }
+
+    @Test func newerManualRequestCancelsLateWaitAndOnlySendsNewDestination() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [], responsiveSlots: [0xFF])
+        await driver.departAfterHostWrite(deviceID: keyboard.id)
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        let first = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { await log.recentCodes().contains { $0.contains("|R0001|") && $0.contains("|WAIT|") } })
+        let second = Task { await engine.switchChannel(3) }
+        #expect(await discoveryEventually { await log.recentCodes().contains { $0.contains("|R0002|") && $0.contains("|WAIT|") } })
+        await first.value
+        #expect(await log.recentLines().contains { $0.contains("수동 전환 대기 취소:") })
+        await driver.add(keyboard)
+        #expect(await discoveryEventually { await driver.hostWriteTargets(deviceID: keyboard.id) == [2] })
+        await second.value
+        #expect(await driver.hostWriteTargets(deviceID: keyboard.id) == [2])
+        await engine.stop()
+    }
+
+    @Test func lateKeyboardDepartureEchoDoesNotStartAnotherMouseFollow() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let mouse = discoveryEndpoint("mouse", physicalID: "mouse", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [mouse], responsiveSlots: [0xFF])
+        await driver.departAfterHostWrite(deviceID: mouse.id)
+        await driver.departAfterHostWrite(deviceID: keyboard.id, echo: true)
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        let events = DiscoveryEvents()
+        await engine.configure(keyboardID: "keyboard#255", mouseID: "mouse#255", followEnabled: true)
+        try await engine.start { event in Task { await events.record(event) } }
+        #expect(await discoveryEventually { await engine.currentDevices().first?.kind == "마우스" })
+        let request = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { await events.switchStates("mouse#255").last == .complete })
+        #expect(await driver.hostWriteTargets(deviceID: mouse.id) == [1])
+        await driver.add(keyboard)
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("따라가기 생략: 수동 요청 에코") } })
+        await request.value
+        #expect(await driver.hostWriteTargets(deviceID: keyboard.id) == [1])
+        #expect(await driver.hostWriteTargets(deviceID: mouse.id) == [1])
+        #expect(await events.switchStates("mouse#255").allSatisfy { $0 != .unconfirmed })
+        #expect(await log.recentLines().allSatisfy { !$0.contains("따라가기 대기 만료") })
+        await engine.stop()
+    }
+
+    @Test func disabledLateDeviceSwitchExcludesPreparingMouseWithoutNoticeOrDeferredWrite() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let mouse = discoveryEndpoint("mouse", physicalID: "mouse", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [keyboard, mouse], responsiveSlots: [0xFF])
+        await driver.holdHostInfo(deviceID: mouse.id)
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        let events = DiscoveryEvents()
+        await engine.configure(keyboardID: "keyboard#255", mouseID: "mouse#255", followEnabled: true, lateDeviceSwitchEnabled: false)
+        try await engine.start { event in Task { await events.record(event) } }
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.id == "keyboard#255" && $0.kind == "키보드" } })
+        #expect(await discoveryEventually { await driver.heldHostInfoCount > 0 })
+        await driver.injectReport(deviceID: keyboard.id, reportID: 0x11,
+            bytes: [0x11, 0xFF, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("[mouse#255] 따라가기 생략: 미연결 기기 연결 대기 꺼짐") } })
+        await driver.releaseHostInfo()
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.id == "mouse#255" && $0.online } })
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await driver.hostWriteCount == 0)
+        #expect(await events.switchStates("mouse#255").isEmpty)
+        await engine.stop()
+    }
+
+    @Test func serviceConfigurationWithoutLateDeviceFieldDefaultsToEnabled() throws {
+        let json = #"{"keyboardIDs":["keyboard#255"],"mouseIDs":[],"followEnabled":true}"#
+        let configuration = try JSONDecoder().decode(ServiceConfiguration.self, from: Data(json.utf8))
+        #expect(configuration.lateDeviceSwitchEnabled ?? true)
+        #expect(ServiceConfiguration(keyboardIDs: [], mouseIDs: [], followEnabled: false).lateDeviceSwitchEnabled == true)
+    }
+
+    @Test(arguments: [true, false, nil] as [Bool?])
+    func serviceConfigurationRoundTripsLateDeviceField(_ enabled: Bool?) throws {
+        let original = ServiceConfiguration(keyboardIDs: ["keyboard#255"], mouseIDs: ["mouse#255"],
+                                            followEnabled: true, lateDeviceSwitchEnabled: enabled, owner: 501)
+        let decoded = try JSONDecoder().decode(ServiceConfiguration.self, from: JSONEncoder().encode(original))
+        #expect(decoded.keyboardIDs == original.keyboardIDs && decoded.mouseIDs == original.mouseIDs)
+        #expect(decoded.followEnabled == original.followEnabled && decoded.owner == original.owner)
+        #expect(decoded.lateDeviceSwitchEnabled == enabled)
+    }
+
+    @Test(arguments: ["P", "T"])
+    func lateManualSwitchUsesTheSameDestinationFromFloatingAndTrayButtons(_ source: String) async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [], responsiveSlots: [0xFF])
+        await driver.departAfterHostWrite(deviceID: keyboard.id)
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        let request = Task { await engine.switchChannel(3, source: source) }
+        #expect(await discoveryEventually { await log.recentCodes().contains { $0.contains("|\(source)3|") && $0.contains("|WAIT|") } })
+        await driver.add(keyboard)
+        await request.value
+        #expect(await driver.hostWriteTargets(deviceID: keyboard.id) == [2])
+        await engine.stop()
+    }
+
+    @Test(arguments: ["키보드", "마우스"])
+    func lateManualNoticeUsesDeviceKindWhenTheNameIsUnknown(_ kind: String) async throws {
+        let driver = DiscoveryDriver(endpoints: [])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        let events = DiscoveryEvents()
+        await engine.configure(keyboardID: kind == "키보드" ? "unknown#255" : nil,
+                               mouseID: kind == "마우스" ? "unknown#255" : nil, followEnabled: true)
+        try await engine.start { event in Task { await events.record(event) } }
+        let request = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { await events.switchStates("unknown#255") == [.switching] })
+        let row = await events.switchNotices("unknown#255").first
+        #expect(row?.name == kind && row?.kind == kind)
+        request.cancel()
+        await request.value
+        #expect(await discoveryEventually { await events.switchStates("unknown#255").last == .unconfirmed })
+        await engine.stop()
+    }
+
+    @Test(arguments: ["selection", "toggle", "stop", "task"])
+    func lateManualWaitCancellationNeverReplaysWhenTheKeyboardArrives(_ reason: String) async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [], responsiveSlots: [0xFF])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        let request = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { await log.recentCodes().contains { $0.contains("|WAIT|") } })
+        switch reason {
+        case "selection": await engine.configure(keyboardID: nil, mouseID: nil, followEnabled: true)
+        case "toggle": await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true, lateDeviceSwitchEnabled: false)
+        case "stop": await engine.stop()
+        default: request.cancel()
+        }
+        await request.value
+        #expect(await log.recentLines().contains { $0.contains("수동 전환 대기 취소:") })
+        #expect(await log.recentCodes().contains { $0.contains("|CAN_PREP|") })
+        await driver.add(keyboard)
+        if reason != "stop" {
+            #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
+        }
+        #expect(await driver.hostWriteCount == 0)
+        await engine.stop()
+    }
+
+    @Test func lateManualWaitRetainsKnownNameAcrossBluetoothReattachment() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [keyboard], responsiveSlots: [0xFF])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        let events = DiscoveryEvents()
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { event in Task { await events.record(event) } }
+        #expect(await discoveryEventually { await engine.currentDevices().first?.kind == "키보드" })
+        await driver.remove(keyboard.id)
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == false })
+        let request = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { await events.switchStates("keyboard#255") == [.switching] })
+        #expect(await events.switchNotices("keyboard#255").first?.name == "MX KEYS S")
+        let returned = discoveryEndpoint("keyboard-returned", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        await driver.departAfterHostWrite(deviceID: returned.id)
+        await driver.add(returned)
+        await request.value
+        #expect(await driver.hostWriteTargets(deviceID: returned.id) == [1])
+        await engine.stop()
+    }
+
+    @Test func lateManualDeadlineIncludesTimeSpentPresentingTheInitialNotice() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [], responsiveSlots: [0xFF])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        let gate = ManualNoticeGate()
+        let request = Task { await engine.switchChannel(2, presentNotice: { _ in await gate.present() }) }
+        #expect(await discoveryEventually { await gate.entered })
+        await driver.add(keyboard)
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
+        #expect(await driver.hostWriteCount == 0)
+        try await Task.sleep(for: .milliseconds(3_100))
+        await gate.release()
+        await request.value
+        #expect(await driver.hostWriteCount == 0)
+        #expect(await log.recentLines().contains { $0.contains("수동 전환 대기 만료: 3초 안에 연결 안 됨") })
+        await engine.stop()
+    }
+
+    @Test func keyboardDepartureCancelsItsLateManualWait() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let mouse = discoveryEndpoint("mouse", physicalID: "mouse", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [mouse], responsiveSlots: [0xFF])
+        await driver.departAfterHostWrite(deviceID: mouse.id)
+        await driver.holdHostInfo(deviceID: keyboard.id)
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: "mouse#255", followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().first?.online == true })
+        let request = Task { await engine.switchChannel(2) }
+        #expect(await discoveryEventually { await driver.hostWriteTargets(deviceID: mouse.id) == [1] })
+        await driver.add(keyboard)
+        #expect(await discoveryEventually { await driver.heldHostInfoCount > 0 })
+        await driver.injectReport(deviceID: keyboard.id, reportID: 0x11,
+            bytes: [0x11, 0xFF, 9, 0, 0, 2] + Array(repeating: 0, count: 14))
+        await request.value
+        #expect(await driver.hostWriteTargets(deviceID: keyboard.id).isEmpty)
+        #expect(await log.recentLines().contains { $0.contains("수동 전환 대기 취소:") })
+        await engine.stop()
+    }
+
     @Test(arguments: [false, true]) func packetModeKeepsConnectionsAndNeverRecordsOrdinaryInput(_ trace: Bool) async throws {
         let endpoint = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
         let driver = DiscoveryDriver(endpoints: [endpoint], responsiveSlots: [0xFF])
@@ -289,6 +626,49 @@ struct DeviceEngineTests {
         await engine.stop(); await request.value
     }
 
+    @Test(arguments: [false, true], [false, true])
+    func localDepartureCompletesNoticeAfterManualOrFollowSwitch(_ receiver: Bool, _ follow: Bool) async throws {
+        let keyboard = discoveryEndpoint(receiver ? "bolt" : "keyboard", physicalID: receiver ? "receiver" : "keyboard",
+                                         receiver: receiver, reportIDs: [0x11])
+        let mouse = receiver ? keyboard : discoveryEndpoint("mouse", physicalID: "mouse", receiver: false, reportIDs: [0x11])
+        let keyboardID = receiver ? "receiver#1" : "keyboard#255"
+        let mouseID = receiver ? "receiver#2" : "mouse#255"
+        let driver = DiscoveryDriver(endpoints: receiver ? [keyboard] : [keyboard, mouse],
+                                     responsiveSlots: receiver ? [1, 2] : [0xFF])
+        let log = try discoveryLog(), engine = DeviceEngine(driver: driver, log: log)
+        let events = DiscoveryEvents()
+        await engine.configure(keyboardID: keyboardID, mouseID: mouseID, followEnabled: true)
+        try await engine.start { event in Task { await events.record(event) } }
+        #expect(await discoveryEventually { await engine.currentDevices().filter { $0.online && $0.kind != "기기" }.count == 2 })
+        // Keep background host queries from falsely reporting that a departed receiver device returned.
+        await driver.holdHostInfo(deviceID: keyboard.id)
+        await driver.holdHostInfo(deviceID: mouse.id)
+        let request = Task {
+            if follow {
+                await driver.injectReport(deviceID: keyboard.id, reportID: 0x11,
+                    bytes: [0x11, receiver ? 1 : 0xFF, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+            } else { await engine.switchChannel(2) }
+        }
+        #expect(await discoveryEventually { await driver.hostWriteCount == (follow ? 1 : 2) })
+        #expect(await discoveryEventually { await events.switchStates(mouseID).contains(.switching) })
+        #expect(await events.switchStates(mouseID).allSatisfy { $0 != .complete })
+        if receiver {
+            for slot: UInt8 in follow ? [2] : [1, 2] {
+                await driver.injectReport(deviceID: mouse.id, reportID: 0x10,
+                    bytes: [0x10, slot, 0x41, 0x10, 0x41, 0x34, 0xB0])
+            }
+        } else {
+            await driver.remove(mouse.id)
+            if !follow { await driver.remove(keyboard.id) }
+        }
+        #expect(await discoveryEventually { await events.switchStates(mouseID).last == .complete })
+        #expect(await discoveryEventually { await events.switchStates(keyboardID).last == .complete })
+        await request.value
+        let lines = await log.recentLines()
+        #expect(lines.contains { $0.contains("SWITCH_END") && $0.contains("device=\(mouseID)") && $0.contains("result=localLinkClosed") && $0.contains("remoteArrival=unobserved") })
+        await engine.stop()
+    }
+
     @Test func eitherSelectedKeyboardSwitchesAllSelectedMice() async throws {
         let names = ["keyboard-a", "keyboard-b", "mouse-a", "mouse-b"]
         let driver = DiscoveryDriver(endpoints: names.map { discoveryEndpoint($0, physicalID: $0, receiver: false, reportIDs: [0x11]) }, responsiveSlots: [0xFF])
@@ -301,22 +681,6 @@ struct DeviceEngineTests {
         #expect(await driver.hostWriteTargets(deviceID: "mouse-a") == [1])
         #expect(await driver.hostWriteTargets(deviceID: "mouse-b") == [1])
         await engine.stop()
-    }
-
-    @Test func authenticatedRelaySwitchesOnlyMiceAndRequiresFollowEnabled() async throws {
-        let names = ["keyboard", "mouse-a", "mouse-b"]
-        let driver = DiscoveryDriver(endpoints: names.map { discoveryEndpoint($0, physicalID: $0, receiver: false, reportIDs: [0x11]) }, responsiveSlots: [0xFF])
-        let engine = DeviceEngine(driver: driver, log: try discoveryLog())
-        await engine.configure(keyboardIDs: ["keyboard#255"], mouseIDs: ["mouse-a#255", "mouse-b#255"], followEnabled: false)
-        try await engine.start { _ in }
-        #expect(await discoveryEventually { await engine.currentDevices().filter(\.online).count == 3 })
-        await engine.switchMice(2)
-        #expect(await driver.hostWriteCount == 0)
-        await engine.configure(keyboardIDs: ["keyboard#255"], mouseIDs: ["mouse-a#255", "mouse-b#255"], followEnabled: true)
-        let request = Task { await engine.switchMice(2) }
-        #expect(await discoveryEventually { Set(await driver.hostWriteEndpoints) == ["mouse-a", "mouse-b"] })
-        #expect(await driver.hostWriteTargets(deviceID: "keyboard").isEmpty)
-        await engine.stop(); await request.value
     }
 
     @Test func followEnablesOnlyWirelessNotificationBitAndVerifiesItOnce() async throws {
@@ -364,6 +728,130 @@ struct DeviceEngineTests {
         #expect(devices.map(\.name).sorted() == ["MX KEYS S", "MX Master 3S"].sorted())
         #expect(Set(devices.map(\.kind)) == ["키보드", "마우스"])
         #expect(devices.allSatisfy { $0.featureIndex == 9 && $0.currentHost == 0 && $0.hostCount == 3 })
+        await engine.stop()
+    }
+
+    @Test func nameLookupThatRepeatsTheChangeHostIndexNeverSendsGetNameThere() async throws {
+        // getName is function 1 like setCurrentHost, so reading the name through the 0x1814 index would write channel 1.
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])],
+                                     responsiveSlots: [0xFF])
+        await driver.useChangeHostIndex(slot: 0xFF, index: 3)
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("이름 기능 위치 응답이 0x1814 위치") } })
+        #expect(await driver.hostWriteCount == 0)
+        await engine.stop()
+    }
+
+    @Test func expiredFollowWaitForAnUnreachableMouseIsUnconfirmedNotFailed() async throws {
+        // Windows 0.2.43: a mouse that never answered may already be on the destination, and no command was sent.
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("receiver")], responsiveSlots: [1])
+        let events = DiscoveryEvents()
+        let engine = DeviceEngine(driver: driver, log: try discoveryLog())
+        await engine.configure(keyboardID: "receiver#1", mouseID: "receiver#2", followEnabled: true)
+        try await engine.start { event in Task { await events.record(event) } }
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.id == "receiver#1" && $0.online } })
+        await driver.injectReport(deviceID: "receiver", reportID: 0x11, bytes: [0x11, 1, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+        #expect(await discoveryEventually(attempts: 13_000) { await events.switchStates("receiver#2").contains(.unconfirmed) })
+        let states = await events.switchStates("receiver#2")
+        #expect(!states.contains(.failed))
+        #expect(await driver.hostWriteCount == 0)
+        await engine.stop()
+    }
+
+    @Test func departureParkedBeforeTheLookupIsFollowedWhenTheBluetoothHandleClosesWithARememberedIndex() async throws {
+        // Measured on Windows 2026-10-24: the departure arrived on a freshly opened handle and was dropped at close.
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [keyboard], responsiveSlots: [0xFF])
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.online && $0.featureIndex == 9 } })
+        await driver.remove("keyboard")
+        await driver.changeFeatureIndex(slot: 0xFF, index: 9)
+        await driver.add(keyboard)
+        await driver.injectReport(deviceID: "keyboard", reportID: 0x11, bytes: [0x11, 0xFF, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+        try await Task.sleep(for: .milliseconds(200))
+        await driver.remove("keyboard")
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("보관한 전환 신호를 출발로 처리함: HID 통로가 닫힘") && $0.contains("채널 2") } })
+        #expect(await discoveryEventually { await log.recentCodes().contains { $0.contains("|F2|K1|KEY|") } })
+        await engine.stop()
+    }
+
+    @Test func departureParkedBeforeAnyLookupIsDiscardedWithItsReasonWhenTheIndexIsUnknown() async throws {
+        let keyboard = discoveryEndpoint("keyboard", physicalID: "keyboard", receiver: false, reportIDs: [0x11])
+        let driver = DiscoveryDriver(endpoints: [keyboard], responsiveSlots: [0xFF])
+        await driver.changeFeatureIndex(slot: 0xFF, index: 9)
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "keyboard#255", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        await driver.injectReport(deviceID: "keyboard", reportID: 0x11, bytes: [0x11, 0xFF, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+        try await Task.sleep(for: .milliseconds(200))
+        await driver.remove("keyboard")
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("보관 이벤트 폐기: HID 통로가 닫힘") && $0.contains("0x1814 위치를 아직 모름") } })
+        #expect(await log.recentCodes().allSatisfy { !$0.contains("|KEY|") })
+        await engine.stop()
+    }
+
+    @Test func receiverLinkLostSettlesADepartureParkedBeforeTheLookup() async throws {
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("bolt")], responsiveSlots: [1])
+        await driver.changeFeatureIndex(slot: 1, index: 9)
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "receiver#1", mouseID: nil, followEnabled: true)
+        try await engine.start { _ in }
+        await driver.injectReport(deviceID: "bolt", reportID: 0x11, bytes: [0x11, 1, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+        try await Task.sleep(for: .milliseconds(200))
+        await driver.injectReport(deviceID: "bolt", reportID: 0x10, bytes: [0x10, 1, 0x41, 0x10, 0x41, 0x34, 0xB0])
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("보관 이벤트 폐기: 수신기가 링크 끊김을 알림") } })
+        await engine.stop()
+    }
+
+    @Test func aMouseWaitingForTheKeyboardIsQueriedAtOnceInsteadOfAtItsNextBackoff() async throws {
+        // Slot 2 answered "empty slot" (error 9), which backs its refresh off by 30 s. When the keyboard leaves,
+        // the waiting mouse must be asked again immediately, and it follows within the 10 s wait.
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("bolt")], responsiveSlots: [1, 2])
+        await driver.reject(slot: 2)
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "receiver#1", mouseID: "receiver#2", followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await log.recentLines().contains { $0.contains("30초 뒤 재조회") } })
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.id == "receiver#1" && $0.online } })
+        await driver.accept(slot: 2)
+        await driver.injectReport(deviceID: "bolt", reportID: 0x11, bytes: [0x11, 1, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+        #expect(await discoveryEventually(attempts: 6_000) { await driver.hostWriteTargets(deviceID: "bolt") == [1] })
+        await engine.stop()
+    }
+
+    @Test func longReportWithFeatureIndex41NeverChangesAReceiverSlotLink() async throws {
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("bolt")], responsiveSlots: [1])
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().contains { $0.id == "receiver#1" && $0.online } })
+        await driver.injectReport(deviceID: "bolt", reportID: 0x11, bytes: [0x11, 1, 0x41, 0x00, 0x41, 0x42, 0xB0] + Array(repeating: 0, count: 13))
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await engine.currentDevices().contains { $0.id == "receiver#1" && $0.online })
+        #expect(await log.recentLines().allSatisfy { !$0.contains("수신기 기기 연결") })
+        await engine.stop()
+    }
+
+    @Test func anErrorReplyToOurSetCurrentHostIsLoggedWithItsDelayAndLayout() async throws {
+        let driver = DiscoveryDriver(endpoints: [discoveryEndpoint("bolt")], responsiveSlots: [1, 2])
+        await driver.answerHostWrites(withError: 5)
+        let log = try discoveryLog()
+        let engine = DeviceEngine(driver: driver, log: log)
+        await engine.configure(keyboardID: "receiver#1", mouseID: "receiver#2", followEnabled: true)
+        try await engine.start { _ in }
+        #expect(await discoveryEventually { await engine.currentDevices().filter(\.online).count == 2 })
+        await driver.injectReport(deviceID: "bolt", reportID: 0x11, bytes: [0x11, 1, 9, 0, 0, 1] + Array(repeating: 0, count: 14))
+        #expect(await discoveryEventually {
+            await log.recentLines().contains { $0.contains("보낸 setCurrentHost에 기기가 오류로 응답함") && $0.contains("오류 코드 5") && $0.contains("ErrorSolaarLayout") }
+        })
         await engine.stop()
     }
 

@@ -128,7 +128,12 @@ struct HidppTests {
     @Test func unrelatedReceiverNoticeRejected() throws {
         #expect(ReceiverMessages.parseDeviceConnection(bytes("10 02 40 10 41 66 B3")) == nil)
         #expect(ReceiverMessages.parseDeviceConnection([0x10, 2, 0x41]) == nil)
+        // A HID++ 2.0 long event of feature index 0x41, or a notice outside receiver slots 1...6, is not a receiver notice.
+        #expect(ReceiverMessages.parseDeviceConnection(bytes("11 01 41 00 41 42 B0")) == nil)
+        #expect(ReceiverMessages.parseDeviceConnection(bytes("10 FF 41 10 01 66 B3")) == nil)
+        #expect(ReceiverMessages.parseDeviceConnection(bytes("10 07 41 10 01 66 B3")) == nil)
         #expect(ReceiverMessages.getShortRegister(0) == bytes("10 FF 81 00 00 00 00"))
+        #expect(try ReceiverMessages.shortRegisterRead(0).bytes == bytes("10 FF 81 00 00 00 00"))
     }
     @Test func receiverRegisterEchoMatchesWithoutSoftwareID() throws {
         #expect(HidppMatch.classify(request: ReceiverMessages.getShortRegister(0), response: bytes("10 FF 81 00 00 09 00")) == .response)

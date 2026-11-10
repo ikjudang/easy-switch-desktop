@@ -55,10 +55,9 @@ final class ServiceEngine: EngineRuntime, @unchecked Sendable {
     private func command(_ request: ServiceRequest) async {
         do { _ = try await self.request(request) } catch { log.write("서비스 요청 실패: \(error)") }
     }
-    func configure(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool) async {
-        await command(.init(operation: "configure", configuration: .init(keyboardIDs: keyboardIDs, mouseIDs: mouseIDs, followEnabled: followEnabled)))
+    func configure(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool, lateDeviceSwitchEnabled: Bool = true) async {
+        await command(.init(operation: "configure", configuration: .init(keyboardIDs: keyboardIDs, mouseIDs: mouseIDs, followEnabled: followEnabled, lateDeviceSwitchEnabled: lateDeviceSwitchEnabled)))
     }
-    func configureLAN(id: UUID, secret: Data?) async { await command(.init(operation: "relay", relayID: id, relaySecret: secret)) }
     func refresh(force: Bool) async { await command(.init(operation: "refresh")) }
     func switchChannel(_ channel: Int, source: String, presentNotice: (@Sendable (EngineEvent) async -> Void)?) async {
         do {
@@ -70,10 +69,6 @@ final class ServiceEngine: EngineRuntime, @unchecked Sendable {
             }
         } catch { log.write("서비스 전환 준비 실패: \(error)") }
     }
-    func switchMice(_ channel: Int, source: String = "L") async { await command(.init(operation: "mice", channel: channel)) }
-    func beginPairing(_ receiverID: String) async { await command(.init(operation: "pair", receiver: receiverID)) }
-    func confirmPairing(_ receiverID: String) async { await command(.init(operation: "confirmPair", receiver: receiverID)) }
-    func cancelPairing(_ receiverID: String) async { await command(.init(operation: "cancelPair", receiver: receiverID)) }
 }
 
 private final class ServiceReply: @unchecked Sendable {

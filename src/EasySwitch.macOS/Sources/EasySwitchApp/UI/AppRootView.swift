@@ -24,6 +24,10 @@ struct AppRootView: View {
     private let exportExpanded: Bool
     private let viewState: MainWindowViewState?
 
+    private static let railHorizontalPadding: CGFloat = 16
+    /// The rail footer's left and bottom gaps share this value, like `footerInset` in the Windows `MainLayout.cs`.
+    private static let railFooterInset: CGFloat = 22
+
     init(model: AppModel, initialPage: AppPage = .home, settingsExpanded: Bool = false, toastExpanded: Bool = false, exportExpanded: Bool = false,
          viewState: MainWindowViewState? = nil) {
         self.settingsExpanded = settingsExpanded; self.exportExpanded = exportExpanded
@@ -93,12 +97,12 @@ struct AppRootView: View {
                     Text(model.followEnabled ? t("마우스 따라가기 켜짐", "Mouse follow on") : t("마우스 따라가기 꺼짐", "Mouse follow off"))
                         .font(AppTheme.body(11)).foregroundStyle(AppTheme.Text2)
                 }
-                Text("Easy Switch v0.1.9")
+                Text("Easy Switch v0.1.10")
                     .font(AppTheme.mono(11)).foregroundStyle(AppTheme.GlyphDisabled)
             }
-            .padding(.leading, 6)
+            .padding(.leading, Self.railFooterInset - Self.railHorizontalPadding)
         }
-        .padding(.horizontal, 16).padding(.top, 26).padding(.bottom, 24)
+        .padding(.horizontal, Self.railHorizontalPadding).padding(.top, 26).padding(.bottom, Self.railFooterInset)
         .frame(width: 200)
         .frame(maxHeight: .infinity)
         .background(AppTheme.BgRail)
@@ -117,14 +121,14 @@ struct AppRootView: View {
             if page == .devices {
                 Button { model.refresh() } label: {
                     Group {
-                        if model.scanInProgress { ProgressView().controlSize(.small).tint(AppTheme.Text2) }
+                        if model.manualRefreshInProgress { ProgressView().controlSize(.small).tint(AppTheme.Text2) }
                         else { AppGlyph(kind: "refresh") }
                     }
                     .frame(width: 38, height: 38)
                     .background(AppTheme.Card, in: RoundedRectangle(cornerRadius: 16))
                 }
                 .buttonStyle(AppActionStyle(radius: 16))
-                .disabled(model.scanInProgress)
+                .disabled(model.manualRefreshInProgress)
                 .help(t("앱이 연결된 기기를 다시 조회해요.", "EasySwitch checks connected devices again."))
                 .accessibilityLabel(t("기기 새로고침", "Refresh devices"))
             }
@@ -309,7 +313,7 @@ struct AppRootView: View {
                         .padding(.horizontal, 12).frame(height: 34)
                 }
                 .buttonStyle(AppActionStyle(outlined: true))
-                .disabled(model.scanInProgress)
+                .disabled(model.manualRefreshInProgress)
             }
         }
         .padding(18).frame(maxWidth: .infinity, alignment: .leading)

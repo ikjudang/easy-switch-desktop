@@ -17,6 +17,17 @@ struct ServicePresentationTests {
         await gate.acknowledge()
         #expect(await delivery.value)
     }
+    @Test func pollSkipsEventsFromAnOlderHelperAndKeepsTheRest() throws {
+        let json = #"{"sequence":7,"logs":["line"],"events":[{"receivers":{"_0":[]}},{"status":{"_0":"ok"}},{"pairing":{"_0":{}}}]}"#
+        let poll = try JSONDecoder().decode(ServicePoll.self, from: Data(json.utf8))
+        #expect(poll.sequence == 7 && poll.logs == ["line"] && poll.events.count == 1)
+        if case .status(let value) = poll.events.first { #expect(value == "ok") } else { Issue.record("Lost the known event") }
+    }
+    @Test func pollRoundTripsThroughTheHelperEncoding() throws {
+        let sent = ServicePoll(sequence: 3, events: [.status("ok"), .keyboardDeparture(target: 1)], logs: [])
+        let poll = try JSONDecoder().decode(ServicePoll.self, from: JSONEncoder().encode(sent))
+        #expect(poll.sequence == 3 && poll.events.count == 2)
+    }
     @Test func expiryRejectsBothWaitingAndFuturePresentationInsteadOfAllowingWrites() async {
         let gate = ServicePresentationGate()
         let delivery = Task { await gate.present(.keyboardDeparture(target: 1)) }

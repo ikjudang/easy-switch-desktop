@@ -57,15 +57,13 @@ with open(sys.argv[1], 'wb') as output:
         'CFBundleIdentifier': 'io.github.ikjudang.EasySwitch',
         'CFBundleExecutable': 'EasySwitch',
         'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '0.1.9',
-        'CFBundleVersion': '10',
+        'CFBundleShortVersionString': '0.1.10',
+        'CFBundleVersion': '11',
         'LSMinimumSystemVersion': '13.0',
         'NSHighResolutionCapable': True,
         'NSSupportsAutomaticTermination': False,
         'LSUIElement': True,
-        'NSPrincipalClass': 'NSApplication',
-        'NSLocalNetworkUsageDescription': 'EasySwitch uses your local network to relay keyboard arrival to your paired tablet.',
-        'NSBonjourServices': ['_easyswitch._udp']
+        'NSPrincipalClass': 'NSApplication'
     }, output)
 PY
 

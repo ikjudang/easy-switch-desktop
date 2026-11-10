@@ -4,14 +4,15 @@ import EasySwitchCore
 public protocol EngineRuntime: AnyObject, Sendable {
     func start(onEvent: @escaping @Sendable (EngineEvent) -> Void) async throws
     func stop() async
-    func configure(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool) async
-    func configureLAN(id: UUID, secret: Data?) async
+    func configure(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool, lateDeviceSwitchEnabled: Bool) async
     func refresh(force: Bool) async
     func switchChannel(_ channel: Int, source: String, presentNotice: (@Sendable (EngineEvent) async -> Void)?) async
-    func switchMice(_ channel: Int, source: String) async
-    func beginPairing(_ receiverID: String) async
-    func confirmPairing(_ receiverID: String) async
-    func cancelPairing(_ receiverID: String) async
+}
+
+public extension EngineRuntime {
+    func configure(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool) async {
+        await configure(keyboardIDs: keyboardIDs, mouseIDs: mouseIDs, followEnabled: followEnabled, lateDeviceSwitchEnabled: true)
+    }
 }
 
 extension DeviceEngine: EngineRuntime {}
@@ -20,11 +21,11 @@ public struct ServiceConfiguration: Codable, Sendable {
     public var keyboardIDs: Set<String>
     public var mouseIDs: Set<String>
     public var followEnabled: Bool
-    public var relayID: UUID?
-    public var relaySecret: Data?
+    public var lateDeviceSwitchEnabled: Bool?
     public var owner: UInt32?
-    public init(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool, owner: UInt32? = nil) {
+    public init(keyboardIDs: Set<String>, mouseIDs: Set<String>, followEnabled: Bool, lateDeviceSwitchEnabled: Bool? = true, owner: UInt32? = nil) {
         self.keyboardIDs = keyboardIDs; self.mouseIDs = mouseIDs; self.followEnabled = followEnabled; self.owner = owner
+        self.lateDeviceSwitchEnabled = lateDeviceSwitchEnabled
     }
 }
 
@@ -33,6 +34,18 @@ public struct ServicePoll: Codable, Sendable {
     public var events: [EngineEvent]
     public var logs: [String]
     public init(sequence: Int, events: [EngineEvent], logs: [String]) { self.sequence = sequence; self.events = events; self.logs = logs }
+    /// The helper keeps running across an app update, so it can send events this build no longer has.
+    /// Skip those events; failing the whole poll would leave the app with no devices.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sequence = try container.decode(Int.self, forKey: .sequence)
+        events = try container.decode([KnownEvent].self, forKey: .events).compactMap(\.event)
+        logs = try container.decode([String].self, forKey: .logs)
+    }
+    private struct KnownEvent: Decodable {
+        let event: EngineEvent?
+        init(from decoder: Decoder) { event = try? EngineEvent(from: decoder) }
+    }
 }
 
 @objc public protocol EngineServiceXPC {
@@ -43,14 +56,11 @@ public struct ServiceRequest: Codable, Sendable {
     public var operation: String
     public var configuration: ServiceConfiguration?
     public var channel: Int?
-    public var receiver: String?
-    public var relayID: UUID?
-    public var relaySecret: Data?
     public var sequence: Int?
     public var presentation: UUID?
     public var source: String?
-    public init(operation: String, configuration: ServiceConfiguration? = nil, channel: Int? = nil, receiver: String? = nil, sequence: Int? = nil, relayID: UUID? = nil, relaySecret: Data? = nil, presentation: UUID? = nil, source: String? = nil) {
-        self.operation = operation; self.configuration = configuration; self.channel = channel; self.receiver = receiver; self.sequence = sequence; self.relayID = relayID; self.relaySecret = relaySecret; self.presentation = presentation; self.source = source
+    public init(operation: String, configuration: ServiceConfiguration? = nil, channel: Int? = nil, sequence: Int? = nil, presentation: UUID? = nil, source: String? = nil) {
+        self.operation = operation; self.configuration = configuration; self.channel = channel; self.sequence = sequence; self.presentation = presentation; self.source = source
     }
 }
 

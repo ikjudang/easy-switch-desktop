@@ -11,7 +11,7 @@ Windows와 macOS 앱을 제공합니다. 아래 사용 안내는 Windows 앱을 
 ### 다운로드
 
 - Windows: [단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-win-x64.exe) · [비압축 단일 실행 파일](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.exe) · [비압축 ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.zip) · [빠른 실행 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-fast-win-x64.zip)
-- macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
+- macOS: [앱 패키지](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.10/EasySwitch-0.1.10-macos-arm64.zip) · [macOS 안내](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - 전체 배포 파일과 업데이트 안내: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
 단일 실행 파일은 내려받은 파일을 실행합니다. 빠른 실행 패키지는 압축을 푼 뒤 `EasySwitch.exe`를 실행하고, 함께 풀린 폴더와 파일을 유지합니다. 별도의 런타임 설치는 필요 없습니다.
@@ -121,7 +121,7 @@ Apps are available for Windows and macOS. The guide below is based on the Window
 ### Download
 
 - Windows: [Single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-win-x64.exe) · [Uncompressed single executable](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.exe) · [Uncompressed ZIP](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-uncompressed-win-x64.zip) · [Fast-start package](https://github.com/ikjudang/easy-switch-desktop/releases/download/v0.2.44/EasySwitch-0.2.44-fast-win-x64.zip)
-- macOS: [App package](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.9/EasySwitch-0.1.9-macos-arm64.zip) · [macOS guide (Korean)](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
+- macOS: [App package](https://github.com/ikjudang/easy-switch-desktop/releases/download/macos-v0.1.10/EasySwitch-0.1.10-macos-arm64.zip) · [macOS guide (Korean)](https://github.com/ikjudang/easy-switch-desktop/tree/macos/initial-native-app/src/EasySwitch.macOS)
 - All release files and update notes: [GitHub Releases](https://github.com/ikjudang/easy-switch-desktop/releases)
 
 To use the single executable, run the downloaded file. To use the fast-start package, extract it, run `EasySwitch.exe`, and keep the extracted folders and files together. You do not need to install a separate runtime.

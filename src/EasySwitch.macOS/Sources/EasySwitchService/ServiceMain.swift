@@ -35,9 +35,8 @@ private actor ServiceState {
               fchmod(descriptor, 0o700) == 0 else { throw ServiceFailure.invalid }
     }
     func start() async throws {
-        await engine.configure(keyboardIDs: configuration.keyboardIDs, mouseIDs: configuration.mouseIDs, followEnabled: configuration.followEnabled)
+        await engine.configure(keyboardIDs: configuration.keyboardIDs, mouseIDs: configuration.mouseIDs, followEnabled: configuration.followEnabled, lateDeviceSwitchEnabled: configuration.lateDeviceSwitchEnabled ?? true)
         try await engine.start { [weak self] event in Task { await self?.record(event) } }
-        if let id = configuration.relayID { await engine.configureLAN(id: id, secret: configuration.relaySecret) }
         log.write("로그인 전 시스템 엔진 시작; 실제 HID 접근 권한은 개별 open 결과로 확인")
     }
     private func record(_ event: EngineEvent) {
@@ -50,32 +49,25 @@ private actor ServiceState {
         case "configure":
             guard var next = request.configuration, next.keyboardIDs.count + next.mouseIDs.count <= 64,
                   next.keyboardIDs.union(next.mouseIDs).allSatisfy({ $0.count <= 1024 }) else { throw ServiceFailure.invalid }
-            next.owner = uid; next.relayID = configuration.relayID; next.relaySecret = configuration.relaySecret
+            next.owner = uid
             try JSONEncoder().encode(next).write(to: configURL, options: [.atomic, .completeFileProtectionUnlessOpen])
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
             configuration = next
-            await engine.configure(keyboardIDs: next.keyboardIDs, mouseIDs: next.mouseIDs, followEnabled: next.followEnabled)
+            await engine.configure(keyboardIDs: next.keyboardIDs, mouseIDs: next.mouseIDs, followEnabled: next.followEnabled, lateDeviceSwitchEnabled: next.lateDeviceSwitchEnabled ?? true)
         case "poll":
             let cursor = request.sequence ?? 0
             let resync = cursor == 0 || cursor > sequence || cursor < (history.first?.0 ?? 0) - 1
             var events: [EngineEvent]
             if resync {
                 events = [.devices(await engine.currentDevices())]
-                if let receivers = history.last(where: { if case .receivers = $0.1 { return true }; return false }) { events.append(receivers.1) }
             } else { events = history.filter { $0.0 > cursor }.map(\.1) }
             return try JSONEncoder().encode(ServicePoll(sequence: sequence, events: events, logs: await log.recentLines()))
-        case "relay":
-            guard let id = request.relayID, request.relaySecret == nil || request.relaySecret?.count == 32 else { throw ServiceFailure.invalid }
-            configuration.relayID = id; configuration.relaySecret = request.relaySecret; configuration.owner = uid
-            try JSONEncoder().encode(configuration).write(to: configURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
-            await engine.configureLAN(id: id, secret: request.relaySecret)
         case "refresh": await engine.refresh(force: true)
         case "presented":
             guard let token = request.presentation, let gate = presentations[token] else { throw ServiceFailure.invalid }
             await gate.acknowledge()
         case "switch":
-            guard let channel = request.channel, (1...3).contains(channel), ["B", "P", "T", "H"].contains(request.source ?? "B") else { throw ServiceFailure.invalid }
+            guard let channel = request.channel, (1...3).contains(channel), ["B", "P", "T"].contains(request.source ?? "B") else { throw ServiceFailure.invalid }
             let gate = ServicePresentationGate(), token = await gate.token
             presentations[token] = gate
             let engine = engine, source = request.source ?? "B"
@@ -87,17 +79,6 @@ private actor ServiceState {
             }
             Task { try? await Task.sleep(for: .seconds(4)); await gate.expire() }
             return try JSONEncoder().encode(await gate.prepared())
-        case "mice":
-            guard let channel = request.channel, (1...3).contains(channel) else { throw ServiceFailure.invalid }
-            let engine = engine; Task { await engine.switchMice(channel) }
-        case "pair", "confirmPair", "cancelPair":
-            guard let receiver = request.receiver, receiver.count <= 1024 else { throw ServiceFailure.invalid }
-            let engine = engine
-            switch request.operation {
-            case "pair": Task { await engine.beginPairing(receiver) }
-            case "confirmPair": Task { await engine.confirmPairing(receiver) }
-            default: Task { await engine.cancelPairing(receiver) }
-            }
         default: throw ServiceFailure.invalid
         }
         return Data("{}".utf8)

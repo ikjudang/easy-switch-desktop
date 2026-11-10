@@ -4,12 +4,14 @@ import CoreServices
 import EasySwitchEngine
 import EasySwitchTransport
 import Darwin
+import os
 
 @main
 struct EasySwitchMain {
     @MainActor static func main() async {
         let args = CommandLine.arguments
         if args.contains("--probe") { Darwin.exit(await runProbe(args)) }
+        if args.contains("--service-probe") { Darwin.exit(await runServiceProbe(args)) }
         let app = NSApplication.shared
         app.setActivationPolicy(args.contains("--render") || args.contains("--render-icon") ? .regular : .accessory)
         registerFonts()
@@ -23,6 +25,32 @@ struct EasySwitchMain {
         guard let directory = Bundle.module.url(forResource: "Resources", withExtension: nil)?.appendingPathComponent("Fonts"),
               let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
         for url in urls { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }
+    }
+
+    /// Polls the login-time engine without configuring it, so it shows what the helper sees with no UI attached.
+    private static func runServiceProbe(_ args: [String]) async -> Int32 {
+        do {
+            let log = try FileLog()
+            let seconds = args.firstIndex(of: "--seconds").flatMap { index in
+                index + 1 < args.count ? Double(args[index + 1]) : nil
+            } ?? 6
+            guard seconds.isFinite, seconds > 0, seconds <= 300 else {
+                FileHandle.standardError.write(Data("--seconds 범위: 0 초과 300 이하\n".utf8)); return 2
+            }
+            let latest = OSAllocatedUnfairLock<[DeviceState]>(initialState: [])
+            let engine = ServiceEngine(log: log)
+            try await engine.start { event in if case .devices(let devices) = event { latest.withLock { $0 = devices } } }
+            try await Task.sleep(for: .seconds(seconds))
+            await engine.stop()
+            let devices = latest.withLock { $0 }
+            print("EasySwitch 서비스 읽기 전용 probe | 설정 변경·채널 전환: 0회")
+            for device in devices {
+                print("\(device.online ? "연결" : "미연결") | \(device.name) | \(device.kind) | \(device.connection) | 채널 \(device.currentHost.map { String($0 + 1) } ?? "?")/\(device.hostCount) | \(device.id)")
+            }
+            print("서비스가 보는 기기: \(devices.count), 응답한 기기: \(devices.filter(\.online).count)")
+            print("로그: \(log.fileURL.path)")
+            return 0
+        } catch { FileHandle.standardError.write(Data("서비스 probe 실패: \(error)\n".utf8)); return 1 }
     }
 
     private static func runProbe(_ args: [String]) async -> Int32 {
@@ -125,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked(_:))
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        item.button?.toolTip = t("좌클릭: 플로팅 버튼 켜기 · 우클릭: 메뉴 열기", "Left-click: show floating button · Right-click: open menu")
+        item.button?.toolTip = nil
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(withTitle: t("EasySwitch 열기", "Open EasySwitch"), action: #selector(showMainWindow), keyEquivalent: "").target = self
@@ -362,8 +390,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let closeKeepsStatusItem = backgroundProbe.controller == nil
             && NSApp.activationPolicy() == .accessory && backgroundProbe.statusItem?.button != nil
             && !backgroundProbe.applicationShouldTerminateAfterLastWindowClosed(NSApp)
-        try await Task.sleep(for: .milliseconds(200))
-        let closedObjectsReleased = firstControllerReleased() && firstViewReleased()
+        // AppKit releases a closed visible window 200-500 ms later. A real leak never clears, so wait for it, not for a fixed delay.
+        var closedObjectsReleased = false
+        for _ in 0..<40 {
+            closedObjectsReleased = firstControllerReleased() && firstViewReleased()
+            if closedObjectsReleased { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
         let handlesReopen = !backgroundProbe.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
             && backgroundProbe.controller?.window?.isVisible == true && NSApp.activationPolicy() == .regular
         backgroundProbe.showMainWindow()

@@ -9,9 +9,6 @@ typealias DeviceViewState = DeviceState
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var receivers: [ReceiverState] = []
-    @Published var pairingProgress: ReceiverPairingProgress?
-    private var pairingWindow: NSWindow?
     @Published var devices: [DeviceViewState] = []
     @Published var selectedKeyboardIDs: Set<String> = []
     @Published var selectedMouseIDs: Set<String> = []
@@ -25,9 +22,11 @@ final class AppModel: ObservableObject {
         set { selectedMouseIDs = Set([newValue].compactMap { $0 }) }
     }
     @Published var followEnabled = false
+    @Published var lateDeviceSwitchEnabled = true
     @Published var logs: [String] = []
     @Published var status = "연결된 기기를 검색하고 있어"
     @Published var scanInProgress = false
+    @Published var manualRefreshInProgress = false
     @Published var needsInputMonitoring = false
     @Published var floatingEnabled = false { didSet { floatingChanged() } }
     @Published var floatingTransparency = 0 { didSet { floatingChanged() } }
@@ -51,10 +50,6 @@ final class AppModel: ObservableObject {
     var floatingSizeScreenBounds: NSRect?
     let mainWindowViewState = MainWindowViewState()
     private var mainWindowVisible = false
-    @Published var relayEnabled = false { didSet { if !loadingPreferences { defaults.set(relayEnabled, forKey: "relayEnabled"); configureRelay() } } }
-    private var relayID = UUID()
-    private var hotkeys: GlobalHotkeys?
-    @Published var hotkeysEnabled = true { didSet { if !loadingPreferences { defaults.set(hotkeysEnabled, forKey: "hotkeysEnabled"); hotkeys?.configure(enabled: hotkeysEnabled) } } }
     private var floating: FloatingController?
     private var notices: NoticePresenter?
     private var floatingX = 0.88, floatingY = 0.58
@@ -78,11 +73,8 @@ final class AppModel: ObservableObject {
             selectedKeyboardIDs = Set(defaults.stringArray(forKey: "selectedKeyboardIDs") ?? [defaults.string(forKey: "selectedKeyboardID")].compactMap { $0 })
             selectedMouseIDs = Set(defaults.stringArray(forKey: "selectedMouseIDs") ?? [defaults.string(forKey: "selectedMouseID")].compactMap { $0 })
             followEnabled = defaults.bool(forKey: "followEnabled")
+            lateDeviceSwitchEnabled = defaults.object(forKey: "lateDeviceSwitchEnabled").map { _ in defaults.bool(forKey: "lateDeviceSwitchEnabled") } ?? true
             systemEngineEnabled = defaults.bool(forKey: "systemEngineEnabled")
-            relayEnabled = defaults.bool(forKey: "relayEnabled")
-            relayID = defaults.string(forKey: "relayID").flatMap(UUID.init(uuidString:)) ?? UUID()
-            defaults.set(relayID.uuidString, forKey: "relayID")
-            hotkeysEnabled = defaults.object(forKey: "hotkeysEnabled") as? Bool ?? true
             floatingEnabled = defaults.bool(forKey: "floatingEnabled")
             floatingTransparency = max(0, min(100, defaults.integer(forKey: "floatingTransparency")))
             floatingSize = defaults.object(forKey: "floatingSize").map { _ in max(0, min(200, defaults.integer(forKey: "floatingSize"))) } ?? 100
@@ -133,10 +125,11 @@ final class AppModel: ObservableObject {
 
     func start() {
         guard !fixture, engine == nil else { return }
-        let runtime: any EngineRuntime = systemEngineEnabled ? ServiceEngine(log: log) : DeviceEngine(log: log)
+        // The helper can own HID only after macOS approves it. Until then the app keeps watching devices itself.
+        let useService = systemEngineEnabled && SystemEngineRegistration.available
+        if systemEngineEnabled && !useService { log.write("로그인 전 엔진 미승인: 승인될 때까지 앱이 기기를 직접 감시") }
+        let runtime: any EngineRuntime = useService ? ServiceEngine(log: log) : DeviceEngine(log: log)
         engine = runtime
-        hotkeys = GlobalHotkeys(action: { [weak self] channel in self?.switchChannel(channel, source: "H") }, log: { [log] in log.write($0) })
-        hotkeys?.configure(enabled: hotkeysEnabled)
         notices = NoticePresenter(preferences: toastPreferences)
         floating = FloatingController(onAction: { [weak self] action in
             guard let self else { return }
@@ -150,12 +143,11 @@ final class AppModel: ObservableObject {
         floating?.onDiagnostic = { [log] in log.write($0) }
         floating?.outsideDismissExclusion = { [weak self] point in self?.floatingSizeScreenBounds?.contains(point) ?? false }
         updateFloating()
-        configureRelay()
         mirrorChanged()
         Task { [self, runtime] in
             do {
                 // Restore the saved pair before the first HID arrival or early switch event.
-                await runtime.configure(keyboardIDs: selectedKeyboardIDs, mouseIDs: selectedMouseIDs, followEnabled: followEnabled)
+                await runtime.configure(keyboardIDs: selectedKeyboardIDs, mouseIDs: selectedMouseIDs, followEnabled: followEnabled, lateDeviceSwitchEnabled: lateDeviceSwitchEnabled)
                 guard engine === runtime else { return }
                 try await runtime.start { [weak self, weak runtime] event in
                     Task { @MainActor [weak self, weak runtime] in
@@ -205,7 +197,6 @@ final class AppModel: ObservableObject {
         updates?.cancel(); updates = nil
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         wakeObserver = nil
-        hotkeys?.stop(); hotkeys = nil
         floating?.stop(); floating = nil
         notices?.stop(); notices = nil
         await engine?.stop(); engine = nil
@@ -232,9 +223,6 @@ final class AppModel: ObservableObject {
         case .notice(let run, let target, let rows, let connection):
             notices?.show(run: run, target: target, rows: rows, connection: connection, english: language == "en", reservedNames: devices.map(\.name))
         case .keyboardDeparture(let target): floating?.keyboardFeedback(target: target)
-        case .keyboardArrival: break // The active local/system engine owns authenticated relay delivery.
-        case .receivers(let receivers): if self.receivers != receivers { self.receivers = receivers }
-        case .pairing(let progress): pairingProgress = progress
         }
     }
 
@@ -252,58 +240,17 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func showReceiverPairing() {
-        if let pairingWindow { pairingWindow.makeKeyAndOrderFront(nil); return }
-        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 460, height: 460), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = t("새 기기 연결", "Connect a device"); window.isReleasedWhenClosed = false
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.contentView = NSHostingView(rootView: ReceiverPairingView(model: self)); window.center()
-        pairingWindow = window; window.makeKeyAndOrderFront(nil)
-    }
-    func beginPairing(_ receiverID: String) {
-        pairingProgress = .init(receiverID: receiverID, stage: "searching")
-        Task { await engine?.beginPairing(receiverID) }
-    }
-    func confirmPairing(_ receiverID: String) { Task { await engine?.confirmPairing(receiverID) } }
-    func cancelPairing(_ receiverID: String) { Task { await engine?.cancelPairing(receiverID) } }
-
-    private func configureRelay() {
-        guard !fixture, let engine else { return }
-        do {
-            let secret = relayEnabled ? try RelaySecretStore.load() : nil
-            if relayEnabled && secret == nil { log.write("LAN 중계 대기: 먼저 태블릿 짝 맺기 필요") }
-            Task { await engine.configureLAN(id: relayID, secret: secret) }
-        } catch { log.write("LAN 중계 설정 실패: \(error)") }
-    }
-
-    func pairTablet() {
-        guard !fixture else { return }
-        do {
-            let alert = NSAlert()
-            alert.messageText = t("태블릿과 새로 짝 맺기", "Pair a tablet")
-            alert.informativeText = t("앱이 새 연결 키를 만들면 이전 태블릿 연결은 해제돼. 계속하려면 새 연결 만들기를 눌러 줘.", "Creating a new connection disconnects the previous tablet. Choose Create connection to continue.")
-            alert.addButton(withTitle: t("새 연결 만들기", "Create connection")); alert.addButton(withTitle: t("취소", "Cancel"))
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let secret = try RelaySecretStore.replace()
-            let host = Host.current().addresses.first { address in
-                address.hasPrefix("192.168.") || address.hasPrefix("10.") || (address.hasPrefix("172.") && (16...31).contains(Int(address.split(separator: ".").dropFirst().first ?? "") ?? 0))
-            } ?? "\(Host.current().localizedName ?? "localhost").local"
-            var uri = URLComponents(); uri.scheme = "easyswitch"; uri.host = "pair"
-            uri.queryItems = [.init(name: "v", value: "1"), .init(name: "host", value: host), .init(name: "port", value: "39821"),
-                .init(name: "id", value: relayID.uuidString), .init(name: "key", value: secret.base64EncodedString())]
-            relayEnabled = true
-            let code = NSAlert(); code.messageText = t("태블릿에 연결 코드 입력", "Enter the connection code on your tablet")
-            code.informativeText = t("아래 코드를 복사해서 태블릿 EasySwitch의 PC 연결에 붙여 넣어 줘. 같은 네트워크에서 앱이 자동으로 연결을 확인해.", "Copy this code into PC connection in EasySwitch on your tablet. Both devices connect automatically on the same network.")
-            let field = NSTextField(wrappingLabelWithString: uri.string ?? "")
-            field.isSelectable = true; field.frame = .init(x: 0, y: 0, width: 420, height: 100); code.accessoryView = field
-            code.addButton(withTitle: t("복사", "Copy")); code.addButton(withTitle: t("닫기", "Close"))
-            if code.runModal() == .alertFirstButtonReturn { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(uri.string ?? "", forType: .string) }
-        } catch { log.write("태블릿 짝 맺기 실패: \(error)") }
-    }
-
     func refresh() {
-        guard !fixture else { return }
-        Task { await engine?.refresh(force: true) }
+        guard !fixture, !manualRefreshInProgress else { return }
+        manualRefreshInProgress = true
+        Task {
+            await engine?.refresh(force: true)
+            // Background status queries also report scanning, so only this request drives the button.
+            try? await Task.sleep(for: .milliseconds(400))
+            var waited = 0
+            while scanInProgress, waited < 3000 { try? await Task.sleep(for: .milliseconds(100)); waited += 100 }
+            manualRefreshInProgress = false
+        }
     }
     func requestInputMonitoring() {
         guard !fixture else { return }
@@ -343,6 +290,13 @@ final class AppModel: ObservableObject {
         Task { await configure() }
     }
 
+    func setLateDeviceSwitchEnabled(_ value: Bool) {
+        lateDeviceSwitchEnabled = value
+        guard !fixture else { return }
+        defaults.set(value, forKey: "lateDeviceSwitchEnabled")
+        Task { await configure() }
+    }
+
     func selectKeyboard(_ id: String?) {
         selectedKeyboardIDs = Set([id].compactMap { $0 }); persistSelections()
     }
@@ -368,7 +322,7 @@ final class AppModel: ObservableObject {
     }
 
     private func configure() async {
-        await engine?.configure(keyboardIDs: selectedKeyboardIDs, mouseIDs: selectedMouseIDs, followEnabled: followEnabled)
+        await engine?.configure(keyboardIDs: selectedKeyboardIDs, mouseIDs: selectedMouseIDs, followEnabled: followEnabled, lateDeviceSwitchEnabled: lateDeviceSwitchEnabled)
     }
 
     func showLogsInFinder() { NSWorkspace.shared.open(logDirectory) }

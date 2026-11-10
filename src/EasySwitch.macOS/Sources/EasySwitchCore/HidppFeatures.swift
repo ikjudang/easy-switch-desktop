@@ -93,6 +93,10 @@ public struct DeviceConnectionNotice: Equatable, Sendable {
 
 public enum ReceiverMessages {
     public static func getShortRegister(_ address: UInt8) -> [UInt8] { [0x10, 0xFF, 0x81, address, 0, 0, 0] }
+    public static func shortRegisterRead(_ address: UInt8) throws -> HidppFrame {
+        let bytes = getShortRegister(address)
+        return try HidppFrame(reportType: .short, deviceIndex: bytes[1], featureIndex: bytes[2], funcSwByte: bytes[3], parameters: Array(bytes[4...6]))
+    }
 
     /// Build only; the caller must explicitly authorize configuration writes and verify the result.
     public static func enableWirelessNotifications(registerReply: [UInt8]) throws -> [UInt8] {
@@ -103,7 +107,9 @@ public enum ReceiverMessages {
     }
 
     public static func parseDeviceConnection(_ raw: [UInt8]) -> DeviceConnectionNotice? {
-        guard raw.count >= 7, raw[0] == 0x10 || raw[0] == 0x11, raw[2] == 0x41 else { return nil }
+        // A receiver notice is a short HID++ 1.0 report for a receiver slot. A long report whose feature index
+        // happens to be 0x41 is a HID++ 2.0 event of the device and must never change its link state.
+        guard raw.count >= 7, raw[0] == 0x10, (1...6).contains(raw[1]), raw[2] == 0x41 else { return nil }
         return DeviceConnectionNotice(deviceIndex: Int(raw[1]), protocolVersion: Int(raw[3]), flags: raw[4],
                                        wirelessProductID: Int(raw[5]) | Int(raw[6]) << 8)
     }
